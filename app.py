@@ -26,7 +26,7 @@ def download_template():
 @app.route('/download-standalone')
 def download_standalone():
     path = os.path.join(app.root_path, 'static', 'AF欄位調整工具_單機版.xlsm')
-    return send_file(path, as_attachment=True, download_name='AF欄位調整工具_單機版.xlsm',
+    return send_file(path, as_attachment=True, download_name='AF欄位調整工具_單機d槽版.xlsm',
                      mimetype='application/vnd.ms-excel.sheet.macroEnabled.12')
 
 @app.route('/process', methods=['POST'])
