@@ -11,7 +11,7 @@ def read_sheet(file_bytes, filename, sheet_name):
     ext = os.path.splitext(filename)[1].lower()
     buf = io.BytesIO(file_bytes)
     engine = 'xlrd' if ext == '.xls' else 'openpyxl'
-    return pd.read_excel(buf, sheet_name=sheet_name, engine=engine, dtype=str)
+    return pd.read_excel(buf, sheet_name=sheet_name, engine=engine, dtype=str, header=0)
 
 @app.route('/')
 def index():
@@ -44,7 +44,7 @@ def process():
         roster_df = roster_df.sort_values('序號')
         ordered_names = roster_df['姓名'].tolist()
 
-        af_df = read_sheet(af_bytes, af_f.filename, 'output')
+        af_df = read_sheet(af_bytes, af_f.filename, 0)
         af_df.columns = [str(c).strip() for c in af_df.columns]
         af_df['姓名'] = af_df['姓名'].str.strip()
 
