@@ -16,10 +16,6 @@ SIMPLE_REGION_COLS = ['清冊序號', '姓名', '薪俸表別', '總金額', '�
                       '職務加給表別', '總金額.2', '支領數額.2',
                       '地域加給表別', '總金額.3', '支領數額.3']
 
-SIMPLE_PRINT_COLS = ['清冊序號', '姓名', '薪俸表別', '總金額', '支領數額',
-                     '專業加給表別', '總金額.1', '支領數額.1',
-                     '職務加給表別', '總金額.2', '支領數額.2']
-
 NUM_COLS = {'清冊序號', '總金額', '支領數額', '待遇差額', '補發金額', '增支',
             '總金額.1', '支領數額.1', '待遇差額.1', '補發金額.1',
             '總金額.2', '支領數額.2', '待遇差額.2', '補發金額.2',
@@ -31,7 +27,7 @@ def read_sheet(file_bytes, filename, sheet_name):
     engine = 'xlrd' if ext == '.xls' else 'openpyxl'
     return pd.read_excel(buf, sheet_name=sheet_name, engine=engine, dtype=str, header=0)
 
-def build_excel(data, columns, col_labels=None):
+def build_excel(data, columns):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = '排序結果'
@@ -45,9 +41,8 @@ def build_excel(data, columns, col_labels=None):
     alt_fill = PatternFill('solid', start_color='EEF3F9')
     data_font = Font(name='Microsoft JhengHei', size=10)
 
-    labels = col_labels if col_labels else columns
-    for ci, label in enumerate(labels, 1):
-        cell = ws.cell(row=1, column=ci, value=label)
+    for ci, col in enumerate(columns, 1):
+        cell = ws.cell(row=1, column=ci, value=col)
         cell.fill = hdr_fill
         cell.font = hdr_font
         cell.alignment = center
@@ -122,30 +117,58 @@ def process():
         roster_df = roster_df[roster_df['姓名'] != '']
         roster_df = roster_df.sort_values('序號')
         ordered_names = roster_df['姓名'].tolist()
+        name_to_seq = {row['姓名']: int(row['序號']) for _, row in roster_df.iterrows()}
 
         af_df = read_sheet(af_bytes, af_f.filename, 0)
         af_df.columns = [str(c).strip() for c in af_df.columns]
         af_df['姓名'] = af_df['姓名'].str.strip()
 
-        af_map = {row['姓名']: row for _, row in af_df.iterrows()}
-        sorted_rows, not_found, found = [], [], set()
+        # 建立姓名到所有資料列的對應（保留原始順序，支援多筆）
+        from collections import defaultdict
+        af_map = defaultdict(list)
+        for _, row in af_df.iterrows():
+            af_map[row['姓名']].append(row)
+
+        sorted_rows = []
+        not_found = []
+        found = set()
 
         for name in ordered_names:
             if name in af_map:
-                sorted_rows.append(af_map[name])
+                seq = name_to_seq[name]
+                for row in af_map[name]:
+                    r = row.copy()
+                    r['清冊序號'] = seq
+                    sorted_rows.append(r)
                 found.add(name)
             else:
                 not_found.append(name)
 
-        extra = [row for _, row in af_df.iterrows() if row['姓名'] not in found]
-        result_df = pd.DataFrame(sorted_rows + extra).reset_index(drop=True)
-        result_df.insert(0, '清冊序號', range(1, len(result_df) + 1))
+        # AF 有但清冊沒有的人，附加到末尾
+        extra_seq = len(ordered_names) + 1
+        extra_names = []
+        for _, row in af_df.iterrows():
+            if row['姓名'] not in found:
+                r = row.copy()
+                r['清冊序號'] = extra_seq
+                sorted_rows.append(r)
+                if row['姓名'] not in extra_names:
+                    extra_names.append(row['姓名'])
+
+        result_df = pd.DataFrame(sorted_rows).reset_index(drop=True)
+
+        # 確保清冊序號在第一欄
+        cols = result_df.columns.tolist()
+        if '清冊序號' in cols:
+            cols.remove('清冊序號')
+        cols = ['清冊序號'] + cols
+        result_df = result_df[cols]
 
         warnings = []
         if not_found:
             warnings.append('清冊中以下人員在 AF 找不到對應：' + '、'.join(not_found))
-        if extra:
-            warnings.append('AF 中以下人員不在清冊內，已附加至末尾：' + '、'.join([r['姓名'] for r in extra]))
+        if extra_names:
+            warnings.append('AF 中以下人員不在清冊內，已附加至末尾：' + '、'.join(extra_names))
 
         app.config['LAST_RESULT'] = result_df.fillna('').to_json(orient='records', force_ascii=False)
         app.config['LAST_COLUMNS'] = result_df.columns.tolist()
