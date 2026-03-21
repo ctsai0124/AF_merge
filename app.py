@@ -1,272 +1,150 @@
-<!DOCTYPE html>
-<html lang="zh-TW">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AF 用人費用欄位排序系統</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Microsoft JhengHei','微軟正黑體',Arial,sans-serif;background:#fff;color:#111;font-size:14px;min-height:100vh;display:flex;flex-direction:column}
-/* ── 頂部 ── */
-.header{border-bottom:3px solid #1a3a5c;padding:10px 32px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
-.header-left{display:flex;align-items:center;gap:14px}
-.header-logo{width:38px;height:38px;border:2px solid #1a3a5c;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#1a3a5c;letter-spacing:-.5px;flex-shrink:0}
-.header-title{font-size:17px;font-weight:700;color:#1a3a5c;letter-spacing:.5px}
-.header-sub{font-size:11px;color:#555;margin-top:2px}
-.header-right{font-size:11px;color:#777;text-align:right;line-height:1.8}
-/* ── 主體 ── */
-.container{max-width:940px;margin:0 auto;padding:24px 24px 32px;width:100%;flex:1}
-/* ── 區塊 ── */
-.section{border:1px solid #b0b8c4;margin-bottom:18px}
-.section-head{background:#1a3a5c;color:#fff;padding:7px 16px;font-size:13px;font-weight:700;letter-spacing:.8px;display:flex;align-items:center;gap:10px;user-select:none}
-.step-badge{background:#fff;color:#1a3a5c;font-size:11px;font-weight:700;border-radius:2px;min-width:20px;height:20px;display:flex;align-items:center;justify-content:center;padding:0 4px;flex-shrink:0}
-.section-body{padding:18px 20px}
-/* ── 上傳區 ── */
-.upload-row{display:grid;grid-template-columns:1fr 1fr;gap:18px}
-.upload-block{border:1px solid #b0b8c4;padding:0}
-.upload-block-head{background:#e8ecf2;padding:7px 12px;font-size:12px;font-weight:700;color:#1a3a5c;border-bottom:1px solid #b0b8c4;display:flex;align-items:center;justify-content:space-between}
-.upload-block-body{padding:14px 14px 12px}
-.upload-desc{font-size:11px;color:#555;margin-bottom:10px;line-height:1.7}
-.upload-desc .em{color:#1a3a5c;font-weight:700}
-.file-row{display:flex;align-items:center;gap:8px}
-.btn-file{border:1px solid #777;background:#fff;color:#333;font-size:12px;padding:5px 14px;cursor:pointer;font-family:inherit;white-space:nowrap;transition:.1s}
-.btn-file:hover{background:#eef0f4}
-.file-name{font-size:12px;color:#444;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.file-name.ok{color:#2a6e3f;font-weight:700}
-.file-name.none{color:#999}
-.upload-input{display:none}
-.template-link{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#1a3a5c;text-decoration:none;margin-top:8px;border:1px solid #1a3a5c;padding:3px 10px}
-.template-link:hover{background:#eef3f9}
-/* ── 提示框 ── */
-.hint-box{background:#fffbe6;border:1px solid #d4aa00;padding:8px 12px;font-size:12px;color:#5a3e00;margin-top:14px;line-height:1.7}
-.hint-box .hi{font-weight:700}
-/* ── 操作列 ── */
-.action-bar{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
-.btn-go{background:#1a3a5c;color:#fff;border:none;padding:8px 32px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;letter-spacing:.5px;transition:.15s}
-.btn-go:hover{background:#122840}
-.btn-go:disabled{background:#aaa;cursor:default}
-.btn-dl{background:#2a6e3f;color:#fff;border:none;padding:8px 22px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;letter-spacing:.3px;transition:.15s}
-.btn-dl:hover{background:#1e5230}
-.btn-reset{background:#fff;color:#444;border:1px solid #999;padding:8px 18px;font-size:12px;cursor:pointer;font-family:inherit;transition:.1s}
-.btn-reset:hover{background:#f4f4f4}
-/* ── 訊息 ── */
-.msg{margin-top:12px}
-.ok-msg{background:#eef7ee;border:1px solid #5a9e6f;padding:8px 12px;font-size:12px;color:#1a4d2a}
-.warn-msg{background:#fffbe6;border:1px solid #d4aa00;padding:8px 12px;font-size:12px;color:#5a3e00;margin-bottom:4px}
-.err-msg{background:#fff2f2;border:1px solid #cc5555;padding:8px 12px;font-size:12px;color:#7a1a1a}
-/* ── loader ── */
-.loader{display:none;align-items:center;gap:8px;font-size:12px;color:#555}
-.spin{width:14px;height:14px;border:2px solid #ccc;border-top-color:#1a3a5c;border-radius:50%;animation:sp .7s linear infinite;flex-shrink:0}
-@keyframes sp{to{transform:rotate(360deg)}}
-/* ── 結果 ── */
-#result-section{display:none}
-.result-bar{display:flex;align-items:center;gap:14px;margin-bottom:12px;flex-wrap:wrap}
-.r-stat{font-size:12px;color:#333}
-.r-stat strong{color:#1a3a5c;font-size:14px}
-.tbl-wrap{overflow-x:auto;border:1px solid #b0b8c4}
-table{border-collapse:collapse;font-size:12px;white-space:nowrap;width:max-content;min-width:100%}
-thead th{background:#1a3a5c;color:#fff;padding:8px 12px;text-align:center;font-weight:700;border-right:1px solid #2a5080;position:sticky;top:0}
-thead th:last-child{border-right:none}
-tbody tr:nth-child(odd){background:#fff}
-tbody tr:nth-child(even){background:#f0f4f9}
-tbody tr:hover{background:#dde8f4}
-tbody td{padding:6px 12px;border:1px solid #d5dae2;text-align:center;color:#222}
-tbody td.name-col{text-align:left;font-weight:600}
-.tbl-note{font-size:11px;color:#888;margin-top:6px}
-/* ── 底部 ── */
-.footer{border-top:1px solid #ccc;padding:8px 24px;font-size:11px;color:#888;text-align:center;flex-shrink:0}
-@media(max-width:640px){
-  .upload-row{grid-template-columns:1fr}
-  .header{padding:10px 16px}
-  .container{padding:16px}
-  .header-right{display:none}
-}
-</style>
-</head>
-<body>
+from flask import Flask, request, jsonify, render_template, send_file
+import pandas as pd
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+import io, os, json
 
-<div class="header">
-  <div class="header-left">
-    <div class="header-logo">AF</div>
-    <div>
-      <div class="header-title">AF 用人費用欄位排序系統</div>
-      <div class="header-sub">依薪資清冊序號自動重新排列 AF 資料欄位</div>
-    </div>
-  </div>
-  <div class="header-right">系統版本：v1.0<br>114 年度適用</div>
-</div>
+app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 
-<div class="container">
+def read_sheet(file_bytes, filename, sheet_name):
+    ext = os.path.splitext(filename)[1].lower()
+    buf = io.BytesIO(file_bytes)
+    engine = 'xlrd' if ext == '.xls' else 'openpyxl'
+    return pd.read_excel(buf, sheet_name=sheet_name, engine=engine, dtype=str)
 
-  <!-- 步驟一 -->
-  <div class="section">
-    <div class="section-head">
-      <span class="step-badge">1</span>上傳檔案
-    </div>
-    <div class="section-body">
-      <div class="upload-row">
+@app.route('/')
+def index():
+    return render_template('index.html')
 
-        <!-- 固定清冊檔 -->
-        <div class="upload-block">
-          <div class="upload-block-head">
-            固定清冊檔（人員排列順序）
-            <a class="template-link" href="/download-template" download>⬇ 下載範例格式</a>
-          </div>
-          <div class="upload-block-body">
-            <div class="upload-desc">
-              包含 <span class="em">input</span> 工作表，欄位：序號、姓名。<br>
-              請依薪資清冊正確順序填入，每月人員異動時更新。<br>
-              支援格式：<span class="em">.xlsx　.xls</span>
-            </div>
-            <div class="file-row">
-              <input class="upload-input" type="file" id="inp-roster" accept=".xlsx,.xls" onchange="onFile('roster',this)">
-              <button class="btn-file" onclick="document.getElementById('inp-roster').click()">選擇檔案</button>
-              <span class="file-name none" id="name-roster">尚未選擇</span>
-            </div>
-          </div>
-        </div>
+@app.route('/download-template')
+def download_template():
+    path = os.path.join(app.root_path, 'static', '固定清冊範例.xlsx')
+    return send_file(path, as_attachment=True, download_name='固定清冊範例.xlsx',
+                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
-        <!-- AF 資料檔 -->
-        <div class="upload-block">
-          <div class="upload-block-head">AF 資料檔（本月）</div>
-          <div class="upload-block-body">
-            <div class="upload-desc">
-              由 AF 用人費用管理系統產製，包含 <span class="em">output</span> 工作表。<br>
-              每月上傳當月產製之檔案。<br>
-              支援格式：<span class="em">.xlsx　.xls</span>
-            </div>
-            <div class="file-row">
-              <input class="upload-input" type="file" id="inp-af" accept=".xlsx,.xls" onchange="onFile('af',this)">
-              <button class="btn-file" onclick="document.getElementById('inp-af').click()">選擇檔案</button>
-              <span class="file-name none" id="name-af">尚未選擇</span>
-            </div>
-          </div>
-        </div>
+@app.route('/process', methods=['POST'])
+def process():
+    if 'roster' not in request.files or 'af' not in request.files:
+        return jsonify({'error': '請上傳兩個檔案'}), 400
 
-      </div>
-      <div class="hint-box">
-        <span class="hi">※ 注意：</span>固定清冊檔的「姓名」欄位須與 AF 資料檔完全一致（含全名、不可有空格），系統以姓名進行比對。若格式不確定，請先下載右上角範例格式參考。
-      </div>
-    </div>
-  </div>
+    roster_f = request.files['roster']
+    af_f = request.files['af']
+    roster_bytes = roster_f.read()
+    af_bytes = af_f.read()
 
-  <!-- 步驟二 -->
-  <div class="section">
-    <div class="section-head"><span class="step-badge">2</span>執行排序</div>
-    <div class="section-body">
-      <div class="action-bar">
-        <button class="btn-go" id="btn-go" onclick="doProcess()" disabled>執行排序</button>
-        <div class="loader" id="loader"><div class="spin"></div>資料比對處理中，請稍候⋯</div>
-      </div>
-      <div class="msg" id="msg"></div>
-    </div>
-  </div>
+    try:
+        roster_df = read_sheet(roster_bytes, roster_f.filename, 'input')
+        roster_df.columns = [str(c).strip() for c in roster_df.columns]
+        roster_df = roster_df[['序號', '姓名']].copy()
+        roster_df['姓名'] = roster_df['姓名'].str.strip()
+        roster_df['序號'] = pd.to_numeric(roster_df['序號'], errors='coerce')
+        roster_df = roster_df.dropna(subset=['序號', '姓名'])
+        roster_df = roster_df[roster_df['姓名'] != '']
+        roster_df = roster_df.sort_values('序號')
+        ordered_names = roster_df['姓名'].tolist()
 
-  <!-- 步驟三（隱藏直到有結果） -->
-  <div class="section" id="result-section">
-    <div class="section-head"><span class="step-badge">3</span>結果預覽與下載</div>
-    <div class="section-body">
-      <div class="result-bar">
-        <div class="r-stat">比對完成，共 <strong id="stat-total">0</strong> 筆人員</div>
-        <button class="btn-dl" onclick="location.href='/download-result'">⬇ 下載排序結果（Excel）</button>
-        <button class="btn-reset" onclick="resetAll()">重新上傳</button>
-      </div>
-      <div class="tbl-wrap">
-        <table>
-          <thead><tr id="tbl-head"></tr></thead>
-          <tbody id="tbl-body"></tbody>
-        </table>
-      </div>
-      <div class="tbl-note" id="tbl-note"></div>
-    </div>
-  </div>
+        af_df = read_sheet(af_bytes, af_f.filename, 'output')
+        af_df.columns = [str(c).strip() for c in af_df.columns]
+        af_df['姓名'] = af_df['姓名'].str.strip()
 
-</div>
+        af_map = {row['姓名']: row for _, row in af_df.iterrows()}
+        sorted_rows, not_found, found = [], [], set()
 
-<div class="footer">本系統僅供內部作業使用，請勿將資料外傳。</div>
+        for name in ordered_names:
+            if name in af_map:
+                sorted_rows.append(af_map[name])
+                found.add(name)
+            else:
+                not_found.append(name)
 
-<script>
-const files = {roster: null, af: null};
+        extra = [row for _, row in af_df.iterrows() if row['姓名'] not in found]
+        result_df = pd.DataFrame(sorted_rows + extra).reset_index(drop=True)
+        result_df.insert(0, '清冊序號', range(1, len(result_df) + 1))
 
-function onFile(key, input) {
-  const f = input.files[0];
-  if (!f) return;
-  files[key] = f;
-  const el = document.getElementById('name-' + key);
-  el.textContent = '✔ ' + f.name;
-  el.className = 'file-name ok';
-  checkReady();
-}
+        warnings = []
+        if not_found:
+            warnings.append('清冊中以下人員在 AF 找不到對應：' + '、'.join(not_found))
+        if extra:
+            warnings.append('AF 中以下人員不在清冊內，已附加至末尾：' + '、'.join([r['姓名'] for r in extra]))
 
-function checkReady() {
-  document.getElementById('btn-go').disabled = !(files.roster && files.af);
-}
+        app.config['LAST_RESULT'] = result_df.fillna('').to_json(orient='records', force_ascii=False)
+        app.config['LAST_COLUMNS'] = result_df.columns.tolist()
 
-async function doProcess() {
-  const fd = new FormData();
-  fd.append('roster', files.roster);
-  fd.append('af', files.af);
+        return jsonify({
+            'success': True,
+            'preview': result_df.head(20).fillna('').to_dict(orient='records'),
+            'columns': result_df.columns.tolist(),
+            'total': len(result_df),
+            'warnings': warnings
+        })
 
-  document.getElementById('btn-go').disabled = true;
-  document.getElementById('loader').style.display = 'flex';
-  document.getElementById('msg').innerHTML = '';
-  document.getElementById('result-section').style.display = 'none';
+    except KeyError as e:
+        return jsonify({'error': '找不到欄位或工作表：' + str(e) + '，請確認檔案格式與範例相符'}), 400
+    except Exception as e:
+        return jsonify({'error': '處理錯誤：' + str(e)}), 500
 
-  try {
-    const res = await fetch('/process', {method: 'POST', body: fd});
-    const data = await res.json();
+@app.route('/download-result')
+def download_result():
+    if 'LAST_RESULT' not in app.config:
+        return '尚無資料可下載', 400
 
-    if (!res.ok || !data.success) {
-      setMsg('err', data.error || '發生未知錯誤，請確認檔案格式');
-    } else {
-      let msgs = '';
-      if (data.warnings && data.warnings.length) {
-        data.warnings.forEach(w => msgs += `<div class="warn-msg">⚠ ${w}</div>`);
-      } else {
-        msgs = '<div class="ok-msg">✔ 排序完成，所有人員均成功對應。</div>';
-      }
-      document.getElementById('msg').innerHTML = msgs;
-      renderTable(data.columns, data.preview, data.total);
-    }
-  } catch (e) {
-    setMsg('err', '連線失敗：' + e.message);
-  } finally {
-    document.getElementById('btn-go').disabled = false;
-    document.getElementById('loader').style.display = 'none';
-  }
-}
+    data = json.loads(app.config['LAST_RESULT'])
+    columns = app.config['LAST_COLUMNS']
 
-function setMsg(type, text) {
-  document.getElementById('msg').innerHTML = `<div class="${type}-msg">${type==='err'?'❌':type==='warn'?'⚠':'✔'} ${text}</div>`;
-}
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = '排序結果'
 
-function renderTable(cols, rows, total) {
-  const head = document.getElementById('tbl-head');
-  const body = document.getElementById('tbl-body');
-  head.innerHTML = cols.map(c => `<th>${c}</th>`).join('');
-  body.innerHTML = rows.map(row =>
-    '<tr>' + cols.map(c => {
-      const cls = c === '姓名' ? ' class="name-col"' : '';
-      return `<td${cls}>${row[c] ?? ''}</td>`;
-    }).join('') + '</tr>'
-  ).join('');
-  document.getElementById('stat-total').textContent = total;
-  const note = total > 20 ? `※ 預覽顯示前 20 筆，下載 Excel 含全部 ${total} 筆資料。` : '※ 已顯示全部資料。';
-  document.getElementById('tbl-note').textContent = note;
-  document.getElementById('result-section').style.display = 'block';
-}
+    hdr_fill = PatternFill('solid', start_color='1a3a5c')
+    hdr_font = Font(bold=True, color='FFFFFF', name='Microsoft JhengHei', size=11)
+    center = Alignment(horizontal='center', vertical='center')
+    left = Alignment(horizontal='left', vertical='center')
+    thin = Side(style='thin', color='AAAAAA')
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    alt_fill = PatternFill('solid', start_color='EEF3F9')
+    data_font = Font(name='Microsoft JhengHei', size=10)
 
-function resetAll() {
-  files.roster = null; files.af = null;
-  ['roster','af'].forEach(k => {
-    document.getElementById('inp-' + k).value = '';
-    const el = document.getElementById('name-' + k);
-    el.textContent = '尚未選擇'; el.className = 'file-name none';
-  });
-  document.getElementById('msg').innerHTML = '';
-  document.getElementById('result-section').style.display = 'none';
-  checkReady();
-}
-</script>
-</body>
-</html>
+    for ci, col in enumerate(columns, 1):
+        cell = ws.cell(row=1, column=ci, value=col)
+        cell.fill = hdr_fill
+        cell.font = hdr_font
+        cell.alignment = center
+        cell.border = border
+
+    num_cols = {'清冊序號', '總金額', '支領數額', '待遇差額', '補發金額', '增支'}
+
+    for ri, row in enumerate(data, 2):
+        row_fill = alt_fill if ri % 2 == 0 else None
+        for ci, col in enumerate(columns, 1):
+            val = row.get(col, '')
+            try:
+                if col in num_cols and val != '':
+                    val = int(float(val))
+            except (ValueError, TypeError):
+                pass
+            cell = ws.cell(row=ri, column=ci, value=val)
+            cell.font = data_font
+            cell.border = border
+            cell.alignment = center if col != '姓名' else left
+            if row_fill:
+                cell.fill = row_fill
+
+    col_widths = {'清冊序號': 9, '姓名': 10, '薪俸表別': 12, '總金額': 10,
+                  '支領數額': 10, '待遇差額': 10, '補發金額': 10,
+                  '專業加給表別': 14, '職務加給表別': 14, '增支': 8}
+    for ci, col in enumerate(columns, 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(ci)].width = col_widths.get(col, 11)
+
+    ws.row_dimensions[1].height = 22
+    ws.freeze_panes = 'A2'
+
+    out = io.BytesIO()
+    wb.save(out)
+    out.seek(0)
+    return send_file(out, as_attachment=True, download_name='AF排序結果.xlsx',
+                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
