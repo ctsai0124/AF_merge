@@ -7,11 +7,84 @@ import io, os, json
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 
+SIMPLE_COLS = ['清冊序號', '姓名', '薪俸表別', '總金額', '支領數額',
+               '專業加給表別', '總金額.1', '支領數額.1',
+               '職務加給表別', '總金額.2', '支領數額.2']
+
+SIMPLE_REGION_COLS = ['清冊序號', '姓名', '薪俸表別', '總金額', '支領數額',
+                      '專業加給表別', '總金額.1', '支領數額.1',
+                      '職務加給表別', '總金額.2', '支領數額.2',
+                      '地域加給表別', '總金額.3', '支領數額.3']
+
+SIMPLE_PRINT_COLS = ['清冊序號', '姓名', '薪俸表別', '總金額', '支領數額',
+                     '專業加給表別', '總金額.1', '支領數額.1',
+                     '職務加給表別', '總金額.2', '支領數額.2']
+
+NUM_COLS = {'清冊序號', '總金額', '支領數額', '待遇差額', '補發金額', '增支',
+            '總金額.1', '支領數額.1', '待遇差額.1', '補發金額.1',
+            '總金額.2', '支領數額.2', '待遇差額.2', '補發金額.2',
+            '總金額.3', '支領數額.3', '待遇差額.3', '補發金額.3'}
+
 def read_sheet(file_bytes, filename, sheet_name):
     ext = os.path.splitext(filename)[1].lower()
     buf = io.BytesIO(file_bytes)
     engine = 'xlrd' if ext == '.xls' else 'openpyxl'
     return pd.read_excel(buf, sheet_name=sheet_name, engine=engine, dtype=str, header=0)
+
+def build_excel(data, columns, col_labels=None):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = '排序結果'
+
+    hdr_fill = PatternFill('solid', start_color='1a3a5c')
+    hdr_font = Font(bold=True, color='FFFFFF', name='Microsoft JhengHei', size=11)
+    center = Alignment(horizontal='center', vertical='center')
+    left = Alignment(horizontal='left', vertical='center')
+    thin = Side(style='thin', color='AAAAAA')
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    alt_fill = PatternFill('solid', start_color='EEF3F9')
+    data_font = Font(name='Microsoft JhengHei', size=10)
+
+    labels = col_labels if col_labels else columns
+    for ci, label in enumerate(labels, 1):
+        cell = ws.cell(row=1, column=ci, value=label)
+        cell.fill = hdr_fill
+        cell.font = hdr_font
+        cell.alignment = center
+        cell.border = border
+
+    for ri, row in enumerate(data, 2):
+        row_fill = alt_fill if ri % 2 == 0 else None
+        for ci, col in enumerate(columns, 1):
+            val = row.get(col, '')
+            try:
+                if col in NUM_COLS and val != '':
+                    val = int(float(val))
+            except (ValueError, TypeError):
+                pass
+            cell = ws.cell(row=ri, column=ci, value=val)
+            cell.font = data_font
+            cell.border = border
+            cell.alignment = center if col != '姓名' else left
+            if row_fill:
+                cell.fill = row_fill
+
+    col_widths = {'清冊序號': 9, '姓名': 10, '薪俸表別': 12, '專業加給表別': 14,
+                  '職務加給表別': 14, '地域加給表別': 14, '增支': 8,
+                  '總金額': 10, '支領數額': 10, '待遇差額': 10, '補發金額': 10,
+                  '總金額.1': 10, '支領數額.1': 10, '待遇差額.1': 10, '補發金額.1': 10,
+                  '總金額.2': 10, '支領數額.2': 10, '待遇差額.2': 10, '補發金額.2': 10,
+                  '總金額.3': 10, '支領數額.3': 10}
+    for ci, col in enumerate(columns, 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(ci)].width = col_widths.get(col, 11)
+
+    ws.row_dimensions[1].height = 22
+    ws.freeze_panes = 'A2'
+
+    out = io.BytesIO()
+    wb.save(out)
+    out.seek(0)
+    return out
 
 @app.route('/')
 def index():
@@ -90,65 +163,36 @@ def process():
     except Exception as e:
         return jsonify({'error': '處理錯誤：' + str(e)}), 500
 
+@app.route('/download-simple')
+def download_simple():
+    if 'LAST_RESULT' not in app.config:
+        return '尚無資料可下載', 400
+    data = json.loads(app.config['LAST_RESULT'])
+    all_cols = app.config['LAST_COLUMNS']
+    cols = [c for c in SIMPLE_COLS if c in all_cols]
+    out = build_excel(data, cols)
+    return send_file(out, as_attachment=True, download_name='排序結果(簡單版).xlsx',
+                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+@app.route('/download-simple-region')
+def download_simple_region():
+    if 'LAST_RESULT' not in app.config:
+        return '尚無資料可下載', 400
+    data = json.loads(app.config['LAST_RESULT'])
+    all_cols = app.config['LAST_COLUMNS']
+    cols = [c for c in SIMPLE_REGION_COLS if c in all_cols]
+    out = build_excel(data, cols)
+    return send_file(out, as_attachment=True, download_name='排序結果(簡單地域加給版).xlsx',
+                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
 @app.route('/download-result')
 def download_result():
     if 'LAST_RESULT' not in app.config:
         return '尚無資料可下載', 400
-
     data = json.loads(app.config['LAST_RESULT'])
     columns = app.config['LAST_COLUMNS']
-
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = '排序結果'
-
-    hdr_fill = PatternFill('solid', start_color='1a3a5c')
-    hdr_font = Font(bold=True, color='FFFFFF', name='Microsoft JhengHei', size=11)
-    center = Alignment(horizontal='center', vertical='center')
-    left = Alignment(horizontal='left', vertical='center')
-    thin = Side(style='thin', color='AAAAAA')
-    border = Border(left=thin, right=thin, top=thin, bottom=thin)
-    alt_fill = PatternFill('solid', start_color='EEF3F9')
-    data_font = Font(name='Microsoft JhengHei', size=10)
-
-    for ci, col in enumerate(columns, 1):
-        cell = ws.cell(row=1, column=ci, value=col)
-        cell.fill = hdr_fill
-        cell.font = hdr_font
-        cell.alignment = center
-        cell.border = border
-
-    num_cols = {'清冊序號', '總金額', '支領數額', '待遇差額', '補發金額', '增支'}
-
-    for ri, row in enumerate(data, 2):
-        row_fill = alt_fill if ri % 2 == 0 else None
-        for ci, col in enumerate(columns, 1):
-            val = row.get(col, '')
-            try:
-                if col in num_cols and val != '':
-                    val = int(float(val))
-            except (ValueError, TypeError):
-                pass
-            cell = ws.cell(row=ri, column=ci, value=val)
-            cell.font = data_font
-            cell.border = border
-            cell.alignment = center if col != '姓名' else left
-            if row_fill:
-                cell.fill = row_fill
-
-    col_widths = {'清冊序號': 9, '姓名': 10, '薪俸表別': 12, '總金額': 10,
-                  '支領數額': 10, '待遇差額': 10, '補發金額': 10,
-                  '專業加給表別': 14, '職務加給表別': 14, '增支': 8}
-    for ci, col in enumerate(columns, 1):
-        ws.column_dimensions[openpyxl.utils.get_column_letter(ci)].width = col_widths.get(col, 11)
-
-    ws.row_dimensions[1].height = 22
-    ws.freeze_panes = 'A2'
-
-    out = io.BytesIO()
-    wb.save(out)
-    out.seek(0)
-    return send_file(out, as_attachment=True, download_name='AF排序結果.xlsx',
+    out = build_excel(data, columns)
+    return send_file(out, as_attachment=True, download_name='排序結果(完整版).xlsx',
                      mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 if __name__ == '__main__':
