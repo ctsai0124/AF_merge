@@ -23,6 +23,12 @@ def download_template():
     return send_file(path, as_attachment=True, download_name='固定清冊範例.xlsx',
                      mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
+@app.route('/download-standalone')
+def download_standalone():
+    path = os.path.join(app.root_path, 'static', 'AF欄位調整工具_單機版.xlsm')
+    return send_file(path, as_attachment=True, download_name='AF欄位調整工具_單機版.xlsm',
+                     mimetype='application/vnd.ms-excel.sheet.macroEnabled.12')
+
 @app.route('/process', methods=['POST'])
 def process():
     if 'roster' not in request.files or 'af' not in request.files:
