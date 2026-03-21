@@ -42,10 +42,16 @@ body{font-family:'Microsoft JhengHei','微軟正黑體',Arial,sans-serif;backgro
 .btn-go{background:#1a3a5c;color:#fff;border:none;padding:8px 32px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;letter-spacing:.5px;transition:.15s}
 .btn-go:hover{background:#122840}
 .btn-go:disabled{background:#aaa;cursor:default}
-.btn-dl{background:#2a6e3f;color:#fff;border:none;padding:8px 22px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;transition:.15s}
+.btn-dl{background:#2a6e3f;color:#fff;border:none;padding:8px 16px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;transition:.15s;white-space:nowrap}
 .btn-dl:hover{background:#1e5230}
+.btn-dl-full{background:#1a3a5c;color:#fff;border:none;padding:8px 16px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;transition:.15s;white-space:nowrap}
+.btn-dl-full:hover{background:#122840}
+.btn-print{background:#fff;color:#1a3a5c;border:1px solid #1a3a5c;padding:8px 16px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;transition:.15s;white-space:nowrap}
+.btn-print:hover{background:#eef3f9}
 .btn-reset{background:#fff;color:#444;border:1px solid #999;padding:8px 18px;font-size:12px;cursor:pointer;font-family:inherit}
 .btn-reset:hover{background:#f4f4f4}
+.dl-btn-row{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;align-items:center}
+.dl-label{font-size:11px;color:#777;margin-right:2px}
 .msg{margin-top:12px}
 .ok-msg{background:#eef7ee;border:1px solid #5a9e6f;padding:8px 12px;font-size:12px;color:#1a4d2a}
 .warn-msg{background:#fffbe6;border:1px solid #d4aa00;padding:8px 12px;font-size:12px;color:#5a3e00;margin-bottom:4px}
@@ -54,7 +60,7 @@ body{font-family:'Microsoft JhengHei','微軟正黑體',Arial,sans-serif;backgro
 .spin{width:14px;height:14px;border:2px solid #ccc;border-top-color:#1a3a5c;border-radius:50%;animation:sp .7s linear infinite;flex-shrink:0}
 @keyframes sp{to{transform:rotate(360deg)}}
 #result-section{display:none}
-.result-bar{display:flex;align-items:center;gap:14px;margin-bottom:12px;flex-wrap:wrap}
+.result-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px}
 .r-stat{font-size:12px;color:#333}
 .r-stat strong{color:#1a3a5c;font-size:14px}
 .tbl-wrap{overflow-x:auto;border:1px solid #b0b8c4}
@@ -77,6 +83,16 @@ tbody td.name-col{text-align:left;font-weight:600}
 .dl-info{flex:1}
 .dl-title{font-size:13px;font-weight:700;color:#1a3a5c;margin-bottom:4px}
 .dl-desc{font-size:11px;color:#555;line-height:1.7;margin-bottom:8px}
+/* 列印樣式 */
+@media print{
+  .header,.section:not(#result-section),.footer,.dl-btn-row,.result-top,.tbl-note{display:none!important}
+  #result-section{display:block!important;border:none}
+  .section-head{background:#1a3a5c!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  thead th{background:#1a3a5c!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  tbody tr:nth-child(even){background:#f0f4f9!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .tbl-wrap{border:none}
+  table{font-size:10px}
+}
 @media(max-width:640px){
   .upload-row{grid-template-columns:1fr}
   .header{padding:10px 16px}
@@ -168,13 +184,18 @@ tbody td.name-col{text-align:left;font-weight:600}
   <div class="section" id="result-section">
     <div class="section-head"><span class="step-badge">3</span>結果預覽與下載</div>
     <div class="section-body">
-      <div class="result-bar">
+      <div class="result-top">
         <div class="r-stat">比對完成，共 <strong id="stat-total">0</strong> 筆人員</div>
-        <button class="btn-dl" onclick="location.href='/download-result'">↓ 下載排序結果（Excel）</button>
         <button class="btn-reset" onclick="resetAll()">重新上傳</button>
       </div>
+      <div class="dl-btn-row">
+        <button class="btn-dl" onclick="location.href='/download-simple'">↓ 排序結果（簡單版）</button>
+        <button class="btn-dl" onclick="location.href='/download-simple-region'">↓ 排序結果（簡單地域加給版）</button>
+        <button class="btn-dl-full" onclick="location.href='/download-result'">↓ 排序結果（完整版）</button>
+        <button class="btn-print" onclick="window.print()">列印簡單版</button>
+      </div>
       <div class="tbl-wrap">
-        <table>
+        <table id="preview-table">
           <thead><tr id="tbl-head"></tr></thead>
           <tbody id="tbl-body"></tbody>
         </table>
@@ -190,10 +211,7 @@ tbody td.name-col{text-align:left;font-weight:600}
         <div class="dl-badge">網頁版</div>
         <div class="dl-info">
           <div class="dl-title">本系統（目前使用中）</div>
-          <div class="dl-desc">
-            直接使用本網頁，無需安裝任何軟體。上傳固定清冊檔與 AF 資料檔後自動比對排序，下載排序結果。<br>
-            推薦多人共用或跨電腦使用。
-          </div>
+          <div class="dl-desc">直接使用本網頁，無需安裝任何軟體。上傳固定清冊檔與 AF 資料檔後自動比對排序，下載排序結果。推薦多人共用或跨電腦使用。</div>
           <a class="template-link" href="/download-template" download>↓ 下載固定清冊範例格式</a>
         </div>
       </div>
@@ -204,8 +222,7 @@ tbody td.name-col{text-align:left;font-weight:600}
           <div class="dl-desc">
             不需要網路，在本機 Excel 直接執行 VBA 巨集操作。<br>
             使用前請將 AF 系統產製之檔案另存為 <span class="em">AF.xlsx</span> 並放於 <span class="em">D:\</span> 目錄下。<br>
-            開啟後需至「開發人員」→「巨集安全性」啟用 VBA 巨集才能正常運作。<br>
-            適合無網路環境或個人單獨使用。
+            開啟後需至「開發人員」→「巨集安全性」啟用 VBA 巨集才能正常運作。適合無網路環境或個人單獨使用。
           </div>
           <a class="template-link" href="/download-standalone" download>↓ 下載單機版 Excel 工具（.xlsm）</a>
         </div>
@@ -219,6 +236,8 @@ tbody td.name-col{text-align:left;font-weight:600}
 
 <script>
 const files = {roster: null, af: null};
+let simpleCols = [];
+
 function onDragOver(e, key) {
   e.preventDefault();
   document.getElementById('drop-' + key).classList.add('drag-over');
@@ -284,15 +303,21 @@ function setMsg(type, text) {
   const icons = {ok:'✔', warn:'⚠', err:'✗'};
   document.getElementById('msg').innerHTML = '<div class="' + type + '-msg">' + icons[type] + ' ' + text + '</div>';
 }
+
+const SIMPLE_COLS = ['清冊序號','姓名','薪俸表別','總金額','支領數額',
+                     '專業加給表別','總金額.1','支領數額.1',
+                     '職務加給表別','總金額.2','支領數額.2'];
+
 function renderTable(cols, rows, total) {
-  document.getElementById('tbl-head').innerHTML = cols.map(c => '<th>' + c + '</th>').join('');
+  simpleCols = SIMPLE_COLS.filter(c => cols.includes(c));
+  document.getElementById('tbl-head').innerHTML = simpleCols.map(c => '<th>' + c + '</th>').join('');
   document.getElementById('tbl-body').innerHTML = rows.map(row =>
-    '<tr>' + cols.map(c => '<td' + (c==='姓名'?' class="name-col"':'') + '>' + (row[c]??'') + '</td>').join('') + '</tr>'
+    '<tr>' + simpleCols.map(c => '<td' + (c==='姓名'?' class="name-col"':'') + '>' + (row[c]??'') + '</td>').join('') + '</tr>'
   ).join('');
   document.getElementById('stat-total').textContent = total;
   document.getElementById('tbl-note').textContent = total > 20
-    ? '※ 預覽顯示前 20 筆，下載 Excel 含全部 ' + total + ' 筆資料。'
-    : '※ 已顯示全部資料。';
+    ? '※ 預覽顯示前 20 筆（簡單版欄位），下載可取得完整資料。'
+    : '※ 已顯示全部資料（簡單版欄位）。';
   document.getElementById('result-section').style.display = 'block';
 }
 function resetAll() {
