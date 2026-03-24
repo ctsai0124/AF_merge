@@ -206,9 +206,7 @@ tbody td.name-col{text-align:left;font-weight:600}
       <!-- 第一排：快速列印 -->
       <div class="dl-btn-row">
         <span class="dl-row-label">🖨 快速列印</span>
-        <button class="btn-print-all" id="btn-print-all" onclick="printAll()" style="display:none">列印完整版（簡單版＋稽核表）</button>
         <button class="btn-print" onclick="printSimple()">列印簡單版</button>
-        <button class="btn-print-audit" id="btn-print-audit" onclick="printAudit()" style="display:none">列印稽核表</button>
       </div>
       <!-- 第二排：Excel 下載 + 稽核表下載 -->
       <div class="dl-btn-row">
@@ -321,8 +319,6 @@ async function doProcess() {
 
       // 稽核相關按鈕：有學校資料才顯示
       const hasSchool = !!data.school_name;
-      document.getElementById('btn-print-all').style.display = hasSchool ? 'inline-block' : 'none';
-      document.getElementById('btn-print-audit').style.display = hasSchool ? 'inline-block' : 'none';
       document.getElementById('btn-audit').style.display = hasSchool ? 'inline-block' : 'none';
 
       renderTable(data.columns, data.preview, data.total);
@@ -364,8 +360,6 @@ function resetAll() {
   });
   document.getElementById('msg').innerHTML = '';
   document.getElementById('result-section').style.display = 'none';
-  document.getElementById('btn-print-all').style.display = 'none';
-  document.getElementById('btn-print-audit').style.display = 'none';
   document.getElementById('btn-audit').style.display = 'none';
   document.getElementById('school-title').textContent = '';
   checkReady();
