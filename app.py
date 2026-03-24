@@ -432,60 +432,114 @@ def print_simple():
 def print_audit():
     if 'LAST_SCHOOL' not in app.config:
         return '尚無資料可列印', 400
-    pdf_bytes = _docx_to_pdf()
-    if pdf_bytes is None:
-        return '稽核表 PDF 產製失敗，請改用下載 Word 後自行列印。', 500
-    return send_file(
-        io.BytesIO(pdf_bytes),
-        mimetype='application/pdf',
-        download_name='稽核表.pdf'
-    )
+    import subprocess, tempfile, shutil
+    school_name = app.config.get('LAST_SCHOOL', '')
+    sn2 = app.config.get('LAST_SN2', '')
+    yearmonth = app.config.get('LAST_YEARMONTH', '')
+    try:
+        docx_buf = build_audit_docx(school_name, sn2, yearmonth)
+        docx_buf.seek(0)
+        tmpdir = tempfile.mkdtemp()
+        env = os.environ.copy()
+        env['HOME'] = tmpdir
+        docx_path = os.path.join(tmpdir, 'audit.docx')
+        html_path = os.path.join(tmpdir, 'audit.html')
+        with open(docx_path, 'wb') as f:
+            f.write(docx_buf.read())
+        r = subprocess.run(
+            ['libreoffice', '--headless', '--convert-to', 'html',
+             '--outdir', tmpdir, docx_path],
+            capture_output=True, timeout=60, env=env
+        )
+        if r.returncode != 0 or not os.path.exists(html_path):
+            app.logger.error('LO error: ' + str(r.stderr))
+            return '稽核表產製失敗，請改用下載 Word 後自行列印。', 500
+        with open(html_path, 'r', encoding='utf-8', errors='replace') as f:
+            html_content = f.read()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        html_content = html_content.replace('<body', '<body onload="window.print()"', 1)
+        return html_content, 200, {'Content-Type': 'text/html; charset=utf-8'}
+    except Exception as e:
+        app.logger.error('print_audit error: ' + str(e))
+        return '錯誤：' + str(e), 500
 
 
 @app.route('/print-all')
 def print_all():
     if 'LAST_RESULT' not in app.config:
         return '尚無資料可列印', 400
+    import subprocess, tempfile, shutil, re as _re
     school_name = app.config.get('LAST_SCHOOL', '')
     sn2 = app.config.get('LAST_SN2', '')
     yearmonth = app.config.get('LAST_YEARMONTH', '')
     data = json.loads(app.config.get('LAST_RESULT', '[]'))
     all_cols = app.config.get('LAST_COLUMNS', [])
 
-    # 簡單版表格
     simple_cols = [c for c in SIMPLE_COLS if c in all_cols]
-    thead = ''.join(f'<th>{c}</th>' for c in simple_cols)
+    thead = ''.join('<th>' + c + '</th>' for c in simple_cols)
     tbody = ''
     for row in data:
-        cells = ''.join(
-            f'<td{"style=\"text-align:left\"" if c == "姓名" else ""}>{row.get(c,"")}</td>'
-            for c in simple_cols
-        )
-        tbody += f'<tr>{cells}</tr>\n'
+        cells = ''
+        for c in simple_cols:
+            cls = ' class="name"' if c == '姓名' else ''
+            cells += '<td' + cls + '>' + str(row.get(c, '')) + '</td>'
+        tbody += '<tr>' + cells + '</tr>\n'
 
-    audit_section = _build_audit_html(school_name, sn2, yearmonth, data) if school_name else ''
+    simple_html = (
+        '<div class="school-name">' + school_name + '</div>'
+        '<h3>排序結果（簡單版）</h3>'
+        '<table><thead><tr>' + thead + '</tr></thead><tbody>' + tbody + '</tbody></table>'
+    )
 
-    return f'''<!DOCTYPE html>
-<html lang="zh-TW"><head><meta charset="UTF-8"><title>完整列印－{school_name}</title>
-<style>
-  body{{font-family:'Microsoft JhengHei',Arial,sans-serif;margin:20px;font-size:12px}}
-  h3{{color:#1a3a5c;margin-bottom:8px;font-size:14px}}
-  table{{border-collapse:collapse;width:100%;font-size:11px}}
-  th,td{{border:1px solid #aaa;padding:5px 8px;text-align:center}}
-  th{{background:#1a3a5c;color:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
-  tr:nth-child(even){{background:#f0f4f9;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
-  .school-name{{font-size:15px;font-weight:700;color:#1a3a5c;margin-bottom:10px}}
-  /* 稽核表從奇數頁開始 */
-  .audit-section{{page-break-before:right}}
-  @media print{{button{{display:none}}body{{margin:8px}}}}
-</style>
-</head><body>
-<div class="school-name">{school_name}</div>
-<h3>排序結果（簡單版）</h3>
-<table><thead><tr>{thead}</tr></thead><tbody>{tbody}</tbody></table>
-{'<div class="audit-section">' + audit_section + '</div>' if audit_section else ''}
-<br><button onclick="window.print()" style="padding:8px 24px;font-size:13px;background:#1a3a5c;color:#fff;border:none;cursor:pointer;font-family:inherit">列印</button>
-</body></html>'''
+    audit_html = ''
+    if school_name:
+        try:
+            docx_buf = build_audit_docx(school_name, sn2, yearmonth)
+            docx_buf.seek(0)
+            tmpdir = tempfile.mkdtemp()
+            env = os.environ.copy()
+            env['HOME'] = tmpdir
+            docx_path = os.path.join(tmpdir, 'audit.docx')
+            html_path = os.path.join(tmpdir, 'audit.html')
+            with open(docx_path, 'wb') as f:
+                f.write(docx_buf.read())
+            r = subprocess.run(
+                ['libreoffice', '--headless', '--convert-to', 'html',
+                 '--outdir', tmpdir, docx_path],
+                capture_output=True, timeout=60, env=env
+            )
+            if r.returncode == 0 and os.path.exists(html_path):
+                with open(html_path, 'r', encoding='utf-8', errors='replace') as hf:
+                    raw = hf.read()
+                m = _re.search(r'<body[^>]*>(.*?)</body>', raw, _re.DOTALL | _re.IGNORECASE)
+                if m:
+                    audit_html = m.group(1)
+            shutil.rmtree(tmpdir, ignore_errors=True)
+        except Exception as e:
+            app.logger.error('print_all audit error: ' + str(e))
+
+    audit_section = '<div class="audit-section">' + audit_html + '</div>' if audit_html else ''
+
+    page = (
+        '<!DOCTYPE html><html lang="zh-TW"><head><meta charset="UTF-8">'
+        '<title>完整列印－' + school_name + '</title>'
+        '<style>'
+        'body{font-family:"Microsoft JhengHei",Arial,sans-serif;margin:20px;font-size:12px}'
+        'h3{color:#1a3a5c;margin-bottom:8px;font-size:13px}'
+        'table{border-collapse:collapse;width:100%;font-size:11px}'
+        'th{border:1px solid #333;padding:5px 8px;background:#1a3a5c;color:#fff;text-align:center;-webkit-print-color-adjust:exact;print-color-adjust:exact}'
+        'td{border:1px solid #aaa;padding:4px 8px;text-align:center}'
+        'td.name{text-align:left;font-weight:600}'
+        'tr:nth-child(even){background:#f0f4f9;-webkit-print-color-adjust:exact;print-color-adjust:exact}'
+        '.school-name{font-size:14px;font-weight:700;color:#1a3a5c;margin-bottom:8px}'
+        '.audit-section{page-break-before:right}'
+        '@media print{body{margin:8px}}'
+        '</style></head>'
+        '<body onload="window.print()">'
+        + simple_html + audit_section +
+        '</body></html>'
+    )
+    return page
 
 
 @app.route('/download-audit')
