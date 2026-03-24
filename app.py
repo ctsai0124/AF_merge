@@ -321,24 +321,27 @@ def _docx_to_pdf():
     sn2 = app.config.get('LAST_SN2', '')
     yearmonth = app.config.get('LAST_YEARMONTH', '')
     try:
-        docx_bytes = build_audit_docx(school_name, sn2, yearmonth)
+        docx_buf = build_audit_docx(school_name, sn2, yearmonth)
+        docx_buf.seek(0)  # 確保從頭讀取
         tmpdir = tempfile.mkdtemp()
-        docx_path = os.path.join(tmpdir, '稽核表.docx')
-        pdf_path = os.path.join(tmpdir, '稽核表.pdf')
+        docx_path = os.path.join(tmpdir, 'audit.docx')
+        pdf_path = os.path.join(tmpdir, 'audit.pdf')
         with open(docx_path, 'wb') as f:
-            f.write(docx_bytes.read())
+            f.write(docx_buf.read())
         result = subprocess.run(
             ['libreoffice', '--headless', '--convert-to', 'pdf',
              '--outdir', tmpdir, docx_path],
-            capture_output=True, timeout=30
+            capture_output=True, timeout=60
         )
         if result.returncode != 0 or not os.path.exists(pdf_path):
+            app.logger.error(f'LibreOffice error: {result.stderr}')
             return None
         with open(pdf_path, 'rb') as f:
             pdf_bytes = f.read()
         shutil.rmtree(tmpdir, ignore_errors=True)
         return pdf_bytes
-    except Exception:
+    except Exception as e:
+        app.logger.error(f'_docx_to_pdf exception: {e}')
         return None
 
 
@@ -383,6 +386,46 @@ def _build_audit_html(school_name, sn2, yearmonth, data):
     {rows_html}
   </tbody>
 </table>'''
+
+
+@app.route('/print-simple')
+def print_simple():
+    if 'LAST_RESULT' not in app.config:
+        return '尚無資料可列印', 400
+    school_name = app.config.get('LAST_SCHOOL', '')
+    data = json.loads(app.config.get('LAST_RESULT', '[]'))
+    all_cols = app.config.get('LAST_COLUMNS', [])
+    simple_cols = [c for c in SIMPLE_COLS if c in all_cols]
+
+    thead = ''.join(f'<th>{c}</th>' for c in simple_cols)
+    tbody = ''
+    for row in data:
+        cells = ''.join(
+            f'<td{"" if c != "姓名" else " class=\"name\""} >{row.get(c, "")}</td>'
+            for c in simple_cols
+        )
+        tbody += f'<tr>{cells}</tr>\n'
+
+    return f'''<!DOCTYPE html>
+<html lang="zh-TW"><head><meta charset="UTF-8">
+<title>排序結果（簡單版）</title>
+<style>
+  body{{font-family:"Microsoft JhengHei",Arial,sans-serif;font-size:12px;margin:20px}}
+  .school{{font-size:15px;font-weight:bold;color:#1a3a5c;margin-bottom:10px}}
+  h3{{font-size:13px;color:#1a3a5c;margin-bottom:8px}}
+  table{{border-collapse:collapse;width:100%}}
+  th{{border:1px solid #333;padding:6px 10px;background:#1a3a5c;color:#fff;text-align:center;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+  td{{border:1px solid #aaa;padding:5px 8px;text-align:center}}
+  td.name{{text-align:left;font-weight:600}}
+  tr:nth-child(even){{background:#f0f4f9;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+  @media print{{body{{margin:8px}}}}
+</style>
+</head>
+<body onload="window.print()">
+<div class="school">{school_name}</div>
+<h3>排序結果（簡單版）</h3>
+<table><thead><tr>{thead}</tr></thead><tbody>{tbody}</tbody></table>
+</body></html>'''
 
 
 @app.route('/print-audit')
