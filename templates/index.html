@@ -207,7 +207,7 @@ tbody td.name-col{text-align:left;font-weight:600}
       <div class="dl-btn-row">
         <span class="dl-row-label">🖨 快速列印</span>
         <button class="btn-print-all" id="btn-print-all" onclick="printAll()" style="display:none">列印完整版（簡單版＋稽核表）</button>
-        <button class="btn-print" onclick="window.print()">列印簡單版</button>
+        <button class="btn-print" onclick="printSimple()">列印簡單版</button>
         <button class="btn-print-audit" id="btn-print-audit" onclick="printAudit()" style="display:none">列印稽核表</button>
       </div>
       <!-- 第二排：Excel 下載 + 稽核表下載 -->
@@ -369,6 +369,10 @@ function resetAll() {
   document.getElementById('btn-audit').style.display = 'none';
   document.getElementById('school-title').textContent = '';
   checkReady();
+}
+
+async function printSimple() {
+  window.open('/print-simple', '_blank');
 }
 
 async function printAudit() {
