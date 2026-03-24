@@ -46,6 +46,8 @@ body{font-family:'Microsoft JhengHei','微軟正黑體',Arial,sans-serif;backgro
 .btn-dl:hover{background:#1e5230}
 .btn-dl-full{background:#1a3a5c;color:#fff;border:none;padding:8px 16px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;transition:.15s;white-space:nowrap}
 .btn-dl-full:hover{background:#122840}
+.btn-dl-audit{background:#7b3a00;color:#fff;border:none;padding:8px 16px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;transition:.15s;white-space:nowrap}
+.btn-dl-audit:hover{background:#5a2a00}
 .btn-print{background:#fff;color:#1a3a5c;border:1px solid #1a3a5c;padding:8px 16px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;transition:.15s;white-space:nowrap}
 .btn-print:hover{background:#eef3f9}
 .btn-reset{background:#fff;color:#444;border:1px solid #999;padding:8px 18px;font-size:12px;cursor:pointer;font-family:inherit}
@@ -63,6 +65,9 @@ body{font-family:'Microsoft JhengHei','微軟正黑體',Arial,sans-serif;backgro
 .result-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px}
 .r-stat{font-size:12px;color:#333}
 .r-stat strong{color:#1a3a5c;font-size:14px}
+/* 學校名稱標題 */
+.school-title{font-size:16px;font-weight:700;color:#1a3a5c;padding:8px 0 12px 0;letter-spacing:.5px;min-height:22px}
+.school-title:empty{display:none}
 .tbl-wrap{overflow-x:auto;border:1px solid #b0b8c4}
 table{border-collapse:collapse;font-size:12px;white-space:nowrap;width:max-content;min-width:100%}
 thead th{background:#1a3a5c;color:#fff;padding:8px 12px;text-align:center;font-weight:700;border-right:1px solid #2a5080;position:sticky;top:0}
@@ -111,7 +116,7 @@ tbody td.name-col{text-align:left;font-weight:600}
       <div class="header-sub">依薪資清冊序號自動重新排列 AF 資料欄位</div>
     </div>
   </div>
-  <div class="header-right">系統版本：v1.0<br>114 年度適用</div>
+  <div class="header-right">系統版本：v1.1<br>114 年度適用</div>
 </div>
 
 <div class="container">
@@ -188,10 +193,13 @@ tbody td.name-col{text-align:left;font-weight:600}
         <div class="r-stat">比對完成，共 <strong id="stat-total">0</strong> 筆人員</div>
         <button class="btn-reset" onclick="resetAll()">重新上傳</button>
       </div>
+      <!-- 學校名稱標題 -->
+      <div class="school-title" id="school-title"></div>
       <div class="dl-btn-row">
         <button class="btn-dl" onclick="location.href='/download-simple'">↓ 排序結果（簡單版）</button>
         <button class="btn-dl" onclick="location.href='/download-simple-region'">↓ 排序結果（簡單地域加給版）</button>
         <button class="btn-dl-full" onclick="location.href='/download-result'">↓ 排序結果（完整版）</button>
+        <button class="btn-dl-audit" id="btn-audit" onclick="location.href='/download-audit'" style="display:none">↓ 下載稽核表（Word）</button>
         <button class="btn-print" onclick="window.print()">列印簡單版</button>
       </div>
       <div class="tbl-wrap">
@@ -290,6 +298,15 @@ async function doProcess() {
         msgs = '<div class="ok-msg">✔ 排序完成，所有人員均成功對應。</div>';
       }
       document.getElementById('msg').innerHTML = msgs;
+
+      // 顯示學校名稱標題
+      const schoolEl = document.getElementById('school-title');
+      schoolEl.textContent = data.school_name || '';
+
+      // 稽核表按鈕：有學校資料才顯示
+      const auditBtn = document.getElementById('btn-audit');
+      auditBtn.style.display = data.school_name ? 'inline-block' : 'none';
+
       renderTable(data.columns, data.preview, data.total);
     }
   } catch(e) {
@@ -329,6 +346,8 @@ function resetAll() {
   });
   document.getElementById('msg').innerHTML = '';
   document.getElementById('result-section').style.display = 'none';
+  document.getElementById('school-title').textContent = '';
+  document.getElementById('btn-audit').style.display = 'none';
   checkReady();
 }
 </script>
