@@ -199,24 +199,24 @@ tbody td.name-col{text-align:left;font-weight:600}
         <div class="r-stat">比對完成，共 <strong id="stat-total">0</strong> 筆人員</div>
         <button class="btn-reset" onclick="resetAll()">重新上傳</button>
       </div>
-      <!-- 學校名稱標題 + 列印簡單版 -->
+      <!-- 學校名稱標題 -->
       <div class="school-title-row">
         <div class="school-title" id="school-title"></div>
-        <button class="btn-print" onclick="window.print()">列印簡單版</button>
       </div>
-      <!-- 第一排：Excel 下載 -->
+      <!-- 第一排：快速列印 -->
+      <div class="dl-btn-row">
+        <span class="dl-row-label">🖨 快速列印</span>
+        <button class="btn-print-all" id="btn-print-all" onclick="printAll()" style="display:none">列印完整版（簡單版＋稽核表）</button>
+        <button class="btn-print" onclick="window.print()">列印簡單版</button>
+        <button class="btn-print-audit" id="btn-print-audit" onclick="printAudit()" style="display:none">列印稽核表</button>
+      </div>
+      <!-- 第二排：Excel 下載 + 稽核表下載 -->
       <div class="dl-btn-row">
         <span class="dl-row-label">📊 Excel 下載</span>
         <button class="btn-dl" onclick="location.href='/download-simple'">↓ 排序結果（簡單版）</button>
         <button class="btn-dl" onclick="location.href='/download-simple-region'">↓ 排序結果（簡單地域加給版）</button>
         <button class="btn-dl-full" onclick="location.href='/download-result'">↓ 排序結果（完整版）</button>
-      </div>
-      <!-- 第二排：Word / 列印稽核表 -->
-      <div class="dl-btn-row" id="audit-row" style="display:none">
-        <span class="dl-row-label">📄 稽核表</span>
-        <button class="btn-dl-audit" id="btn-audit" onclick="location.href='/download-audit'">↓ 下載稽核表（Word）</button>
-        <button class="btn-print-audit" onclick="printAudit()">列印稽核表</button>
-        <button class="btn-print-all" onclick="printAll()">列印完整版（簡單版＋稽核表）</button>
+        <button class="btn-dl-audit" id="btn-audit" onclick="location.href='/download-audit'" style="display:none">↓ 下載稽核表（Word）</button>
       </div>
       <div class="tbl-wrap">
         <table id="preview-table">
@@ -319,8 +319,11 @@ async function doProcess() {
       const schoolEl = document.getElementById('school-title');
       schoolEl.textContent = data.school_name || '';
 
-      // 稽核表按鈕列：有學校資料才顯示
-      document.getElementById('audit-row').style.display = data.school_name ? 'flex' : 'none';
+      // 稽核相關按鈕：有學校資料才顯示
+      const hasSchool = !!data.school_name;
+      document.getElementById('btn-print-all').style.display = hasSchool ? 'inline-block' : 'none';
+      document.getElementById('btn-print-audit').style.display = hasSchool ? 'inline-block' : 'none';
+      document.getElementById('btn-audit').style.display = hasSchool ? 'inline-block' : 'none';
 
       renderTable(data.columns, data.preview, data.total);
     }
@@ -361,7 +364,9 @@ function resetAll() {
   });
   document.getElementById('msg').innerHTML = '';
   document.getElementById('result-section').style.display = 'none';
-  document.getElementById('audit-row').style.display = 'none';
+  document.getElementById('btn-print-all').style.display = 'none';
+  document.getElementById('btn-print-audit').style.display = 'none';
+  document.getElementById('btn-audit').style.display = 'none';
   document.getElementById('school-title').textContent = '';
   checkReady();
 }
