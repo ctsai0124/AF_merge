@@ -431,50 +431,23 @@ def print_simple():
 @app.route('/print-audit')
 def print_audit():
     if 'LAST_SCHOOL' not in app.config:
-        return '尚無資料可列印', 400
-    import subprocess, tempfile, shutil
+        return 'No data', 400
     school_name = app.config.get('LAST_SCHOOL', '')
     sn2 = app.config.get('LAST_SN2', '')
     yearmonth = app.config.get('LAST_YEARMONTH', '')
-    try:
-        docx_buf = build_audit_docx(school_name, sn2, yearmonth)
-        docx_buf.seek(0)
-        tmpdir = tempfile.mkdtemp()
-        env = os.environ.copy()
-        env['HOME'] = tmpdir
-        docx_path = os.path.join(tmpdir, 'audit.docx')
-        html_path = os.path.join(tmpdir, 'audit.html')
-        with open(docx_path, 'wb') as f:
-            f.write(docx_buf.read())
-        r = subprocess.run(
-            ['libreoffice', '--headless', '--convert-to', 'html',
-             '--outdir', tmpdir, docx_path],
-            capture_output=True, timeout=60, env=env
-        )
-        if r.returncode != 0 or not os.path.exists(html_path):
-            app.logger.error('LO error: ' + str(r.stderr))
-            return '稽核表產製失敗，請改用下載 Word 後自行列印。', 500
-        with open(html_path, 'r', encoding='utf-8', errors='replace') as f:
-            html_content = f.read()
-        shutil.rmtree(tmpdir, ignore_errors=True)
-        html_content = html_content.replace('<body', '<body onload="window.print()"', 1)
-        return html_content, 200, {'Content-Type': 'text/html; charset=utf-8'}
-    except Exception as e:
-        app.logger.error('print_audit error: ' + str(e))
-        return '錯誤：' + str(e), 500
+    html = _build_audit_print_html(school_name, sn2, yearmonth, auto_print=True)
+    return html, 200, {'Content-Type': 'text/html; charset=utf-8'}
 
 
 @app.route('/print-all')
 def print_all():
     if 'LAST_RESULT' not in app.config:
-        return '尚無資料可列印', 400
-    import subprocess, tempfile, shutil, re as _re
+        return 'No data', 400
     school_name = app.config.get('LAST_SCHOOL', '')
     sn2 = app.config.get('LAST_SN2', '')
     yearmonth = app.config.get('LAST_YEARMONTH', '')
     data = json.loads(app.config.get('LAST_RESULT', '[]'))
     all_cols = app.config.get('LAST_COLUMNS', [])
-
     simple_cols = [c for c in SIMPLE_COLS if c in all_cols]
     thead = ''.join('<th>' + c + '</th>' for c in simple_cols)
     tbody = ''
@@ -484,62 +457,136 @@ def print_all():
             cls = ' class="name"' if c == '姓名' else ''
             cells += '<td' + cls + '>' + str(row.get(c, '')) + '</td>'
         tbody += '<tr>' + cells + '</tr>\n'
-
-    simple_html = (
-        '<div class="school-name">' + school_name + '</div>'
-        '<h3>排序結果（簡單版）</h3>'
-        '<table><thead><tr>' + thead + '</tr></thead><tbody>' + tbody + '</tbody></table>'
-    )
-
-    audit_html = ''
+    audit_section = ''
     if school_name:
-        try:
-            docx_buf = build_audit_docx(school_name, sn2, yearmonth)
-            docx_buf.seek(0)
-            tmpdir = tempfile.mkdtemp()
-            env = os.environ.copy()
-            env['HOME'] = tmpdir
-            docx_path = os.path.join(tmpdir, 'audit.docx')
-            html_path = os.path.join(tmpdir, 'audit.html')
-            with open(docx_path, 'wb') as f:
-                f.write(docx_buf.read())
-            r = subprocess.run(
-                ['libreoffice', '--headless', '--convert-to', 'html',
-                 '--outdir', tmpdir, docx_path],
-                capture_output=True, timeout=60, env=env
-            )
-            if r.returncode == 0 and os.path.exists(html_path):
-                with open(html_path, 'r', encoding='utf-8', errors='replace') as hf:
-                    raw = hf.read()
-                m = _re.search(r'<body[^>]*>(.*?)</body>', raw, _re.DOTALL | _re.IGNORECASE)
-                if m:
-                    audit_html = m.group(1)
-            shutil.rmtree(tmpdir, ignore_errors=True)
-        except Exception as e:
-            app.logger.error('print_all audit error: ' + str(e))
-
-    audit_section = '<div class="audit-section">' + audit_html + '</div>' if audit_html else ''
-
+        audit_section = '<div class="audit-section">' + _build_audit_print_html(school_name, sn2, yearmonth, inner_only=True) + '</div>'
     page = (
         '<!DOCTYPE html><html lang="zh-TW"><head><meta charset="UTF-8">'
-        '<title>完整列印－' + school_name + '</title>'
+        '<title>' + school_name + '</title>'
         '<style>'
         'body{font-family:"Microsoft JhengHei",Arial,sans-serif;margin:20px;font-size:12px}'
         'h3{color:#1a3a5c;margin-bottom:8px;font-size:13px}'
-        'table{border-collapse:collapse;width:100%;font-size:11px}'
-        'th{border:1px solid #333;padding:5px 8px;background:#1a3a5c;color:#fff;text-align:center;-webkit-print-color-adjust:exact;print-color-adjust:exact}'
-        'td{border:1px solid #aaa;padding:4px 8px;text-align:center}'
-        'td.name{text-align:left;font-weight:600}'
-        'tr:nth-child(even){background:#f0f4f9;-webkit-print-color-adjust:exact;print-color-adjust:exact}'
+        '.simple-table{border-collapse:collapse;width:100%;font-size:11px}'
+        '.simple-table th{border:1px solid #333;padding:5px 8px;background:#1a3a5c;color:#fff;text-align:center;-webkit-print-color-adjust:exact;print-color-adjust:exact}'
+        '.simple-table td{border:1px solid #aaa;padding:4px 8px;text-align:center}'
+        '.simple-table td.name{text-align:left;font-weight:600}'
+        '.simple-table tr:nth-child(even){background:#f0f4f9;-webkit-print-color-adjust:exact;print-color-adjust:exact}'
         '.school-name{font-size:14px;font-weight:700;color:#1a3a5c;margin-bottom:8px}'
         '.audit-section{page-break-before:right}'
+        '.audit-tbl{border-collapse:collapse;width:100%;font-size:10px}'
+        '.audit-tbl th,.audit-tbl td{border:1px solid #333;padding:4px 6px;text-align:center;vertical-align:middle}'
+        '.audit-tbl th{background:#1a3a5c;color:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}'
+        '.audit-title{text-align:center;font-size:14px;font-weight:bold;margin:10px 0 8px}'
         '@media print{body{margin:8px}}'
         '</style></head>'
         '<body onload="window.print()">'
-        + simple_html + audit_section +
+        '<div class="school-name">' + school_name + '</div>'
+        '<h3>排序結果（簡單版）</h3>'
+        '<table class="simple-table"><thead><tr>' + thead + '</tr></thead><tbody>' + tbody + '</tbody></table>'
+        + audit_section +
         '</body></html>'
     )
     return page
+
+
+def _build_audit_print_html(school_name, sn2, yearmonth, auto_print=False, inner_only=False):
+    data_rows = ''
+    for i in range(4):
+        data_rows += (
+            '<tr><td rowspan="2" style="text-align:left;min-width:60px"></td>'
+            '<td>錯誤情形</td>'
+            '<td></td><td colspan="2"></td><td colspan="2"></td><td></td>'
+            '<td colspan="2"></td><td></td><td colspan="2"></td><td></td></tr>\n'
+            '<tr><td>正確情形</td>'
+            '<td></td><td colspan="2"></td><td colspan="2"></td><td></td>'
+            '<td colspan="2"></td><td></td><td colspan="2"></td><td></td></tr>\n'
+        )
+    worker_rows = data_rows
+    inner = (
+        '<div class="audit-title">高雄市政府教育局所屬機關學校 待遇稽核情形紀錄表</div>'
+        '<div style="font-size:11px;margin-bottom:8px">'
+        '編號：' + (sn2 or '　　　') + '　　'
+        '學校名稱：' + (school_name or '　　　　　　　') + '　　'
+        '稽核月份：' + (yearmonth or '　　　') + '</div>'
+        '<table class="audit-tbl">'
+        '<thead>'
+        '<tr>'
+        '<th colspan="2">一般人員<br>(含約脩僱人員)稽核筆數</th>'
+        '<th colspan="2"></th>'
+        '<th colspan="2">錯誤筆數</th>'
+        '<th colspan="3"></th>'
+        '<th colspan="3">正確率</th>'
+        '<th colspan="2">%</th>'
+        '</tr>'
+        '<tr>'
+        '<th colspan="2" rowspan="2">姓　名</th>'
+        '<th colspan="12">抽　驗　項　目</th>'
+        '</tr>'
+        '<tr>'
+        '<th>薪俣表別</th>'
+        '<th colspan="2">薪俣支領數額</th>'
+        '<th colspan="2">專業加給表別</th>'
+        '<th>專業加給支領數額</th>'
+        '<th colspan="2">職務加給表別</th>'
+        '<th>職務加給支領數額</th>'
+        '<th colspan="2">地域加給表別</th>'
+        '<th>地域加給支領數額</th>'
+        '</tr>'
+        '</thead>'
+        '<tbody>' + data_rows + '</tbody>'
+        '</table>'
+        '<br>'
+        '<table class="audit-tbl" style="margin-top:8px">'
+        '<thead>'
+        '<tr>'
+        '<th colspan="2">技工工友稽核筆數</th>'
+        '<th colspan="2"></th>'
+        '<th colspan="2">錯誤筆數</th>'
+        '<th colspan="3"></th>'
+        '<th colspan="3">正確率</th>'
+        '<th colspan="2">%</th>'
+        '</tr>'
+        '<tr>'
+        '<th colspan="2" rowspan="2">姓　名</th>'
+        '<th colspan="12">抽　驗　項　目</th>'
+        '</tr>'
+        '<tr>'
+        '<th>薪俣表別</th>'
+        '<th colspan="2">薪俣支領數額</th>'
+        '<th colspan="2">專業加給表別</th>'
+        '<th>專業加給支領數額</th>'
+        '<th colspan="2">職務加給表別</th>'
+        '<th>職務加給支領數額</th>'
+        '<th colspan="2">地域加給表別</th>'
+        '<th>地域加給支領數額</th>'
+        '</tr>'
+        '</thead>'
+        '<tbody>' + worker_rows + '</tbody>'
+        '</table>'
+        '<div style="margin-top:16px;font-size:11px">'
+        '稽核人員機關學校：　　　　　　　　　　　　職稱：　　　　　　姓名：＿＿＿＿＿＿＿<br>'
+        '該組負責人核章：＿＿＿＿＿＿＿＿＿＿＿<br>'
+        '本局承辦人：＿＿＿＿＿＿＿＿＿＿＿　　人事主任：＿＿＿＿＿＿＿＿＿＿＿＿＿'
+        '</div>'
+    )
+    if inner_only:
+        return inner
+    onload = ' onload="window.print()"' if auto_print else ''
+    return (
+        '<!DOCTYPE html><html lang="zh-TW"><head><meta charset="UTF-8">'
+        '<title>稽核表－' + school_name + '</title>'
+        '<style>'
+        'body{font-family:"Microsoft JhengHei",Arial,sans-serif;margin:20px;font-size:12px}'
+        '.audit-title{text-align:center;font-size:14px;font-weight:bold;margin:10px 0 8px}'
+        '.audit-tbl{border-collapse:collapse;width:100%;font-size:10px}'
+        '.audit-tbl th,.audit-tbl td{border:1px solid #333;padding:4px 6px;text-align:center;vertical-align:middle}'
+        '.audit-tbl th{background:#1a3a5c;color:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}'
+        '@media print{body{margin:8px}}'
+        '</style></head>'
+        '<body' + onload + '>'
+        + inner +
+        '</body></html>'
+    )
 
 
 @app.route('/download-audit')
