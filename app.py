@@ -25,6 +25,46 @@ NUM_COLS = {'清冊序號', '總金額', '支領數額', '待遇差額', '補發
 
 # ── PDF 比對：見 paycheck.py ──
 import paycheck
+import threading
+
+# ── 使用次數計數器 ────────────────────────────────────────
+_counter_lock = threading.Lock()
+
+
+def _counter_file():
+    """計數檔位置：有掛載 DATA_DIR 就存那裡（重新部署不會歸零），否則存專案目錄"""
+    base = os.environ.get('DATA_DIR') or app.root_path
+    try:
+        os.makedirs(base, exist_ok=True)
+    except Exception:
+        base = tempfile.gettempdir()
+    return os.path.join(base, 'counter.json')
+
+
+def load_counter():
+    try:
+        with open(_counter_file(), encoding='utf-8') as f:
+            d = json.load(f)
+    except Exception:
+        d = {}
+    return {'visits': d.get('visits', 0),
+            'sorts': d.get('sorts', 0),
+            'compares': d.get('compares', 0)}
+
+
+def bump_counter(key):
+    """累加某項計數，回傳更新後的完整計數"""
+    with _counter_lock:
+        d = load_counter()
+        if key in d:
+            d[key] += 1
+        try:
+            with open(_counter_file(), 'w', encoding='utf-8') as f:
+                json.dump(d, f)
+        except Exception as e:
+            app.logger.warning(f'計數寫入失敗：{e}')
+        return d
+
 
 # ── 原有功能 ──────────────────────────────────────────────
 
@@ -160,7 +200,13 @@ def build_audit_docx(school_name, sn2, yearmonth):
 
 @app.route('/')
 def index():
+    bump_counter('visits')
     return render_template('index.html')
+
+
+@app.route('/stats')
+def stats():
+    return jsonify(load_counter())
 
 
 @app.route('/download-template')
@@ -261,8 +307,11 @@ def process():
         app.config['LAST_SN2'] = sn2
         app.config['LAST_YEARMONTH'] = yearmonth
 
+        counts = bump_counter('sorts')
+
         return jsonify({
             'success': True,
+            'counts': counts,
             'preview': result_df.head(20).fillna('').to_dict(orient='records'),
             'columns': result_df.columns.tolist(),
             'total': len(result_df),
@@ -319,6 +368,7 @@ def compare_pdf():
         out['af_count'] = len(af_records)
         out['pdf_count'] = len(pdf_people)
         out['warnings'] = af_warns
+        out['counts'] = bump_counter('compares')
         return jsonify(out)
 
     except KeyError as e:
