@@ -19,7 +19,7 @@ body{font-family:'Microsoft JhengHei','微軟正黑體',Arial,sans-serif;backgro
 .section-head-gray{background:#5a6a7a;color:#fff;padding:7px 16px;font-size:13px;font-weight:700;letter-spacing:.8px}
 .step-badge{background:#fff;color:#1a3a5c;font-size:11px;font-weight:700;border-radius:2px;min-width:20px;height:20px;display:flex;align-items:center;justify-content:center;padding:0 4px;flex-shrink:0}
 .section-body{padding:18px 20px}
-.upload-row{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.upload-row{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
 .upload-block{border:1px solid #b0b8c4}
 .upload-block-head{background:#e8ecf2;padding:7px 12px;font-size:12px;font-weight:700;color:#1a3a5c;border-bottom:1px solid #b0b8c4;display:flex;align-items:center;justify-content:space-between}
 .upload-block-body{padding:14px 14px 12px}
@@ -97,17 +97,14 @@ tbody td.name-col{text-align:left;font-weight:600}
 
 /* ── 步驟 4：薪資清冊比對 ── */
 #compare-section{display:none}
-.cmp-top{display:grid;grid-template-columns:1fr auto;gap:16px;align-items:start}
-.cmp-drop{border:2px dashed #b0b8c4;padding:16px 14px;text-align:center;cursor:pointer;background:#fafafa;transition:.2s;position:relative}
-.cmp-drop:hover{background:#f0f4f8;border-color:#1a3a5c}
-.cmp-drop.drag-over{background:#e8f0f8;border-color:#1a3a5c}
-.cmp-drop.done{background:#f0f6f0;border-color:#2a6e3f;border-style:solid}
-.cmp-drop input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
-.cmp-drop.done .drop-text,.cmp-drop.done .drop-hint{display:none}
-.cmp-drop.done .drop-icon{color:#2a6e3f}
-.btn-cmp{background:#1a3a5c;color:#fff;border:none;padding:8px 26px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;letter-spacing:.5px;transition:.15s;white-space:nowrap}
-.btn-cmp:hover{background:#122840}
+.btn-cmp{background:#7b3a00;color:#fff;border:none;padding:8px 30px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;letter-spacing:.5px;transition:.15s;white-space:nowrap}
+.btn-cmp:hover{background:#5a2a00}
 .btn-cmp:disabled{background:#aaa;cursor:default}
+.act-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.act-box{border:1px solid #d5dae2;padding:14px 16px}
+.act-box h4{font-size:12px;color:#1a3a5c;margin-bottom:4px;font-weight:700}
+.act-box .d{font-size:11px;color:#666;line-height:1.7;margin-bottom:11px;min-height:34px}
+.act-order{background:#eef3f9;border:1px solid #c7d8ea;padding:7px 12px;font-size:11px;color:#1a3a5c;line-height:1.7;margin-bottom:14px}
 .cmp-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;margin:16px 0 14px}
 .cmp-card{border:1px solid #d5dae2;background:#f7f9fb;padding:10px 12px;text-align:center}
 .cmp-card .lbl{font-size:11px;color:#666;margin-bottom:3px}
@@ -142,7 +139,6 @@ tbody td.name-col{text-align:left;font-weight:600}
 }
 @media(max-width:640px){
   .upload-row{grid-template-columns:1fr}
-  .cmp-top{grid-template-columns:1fr}
   .header{padding:10px 16px}
   .container{padding:16px}
   .header-right{display:none}
@@ -211,6 +207,26 @@ tbody td.name-col{text-align:left;font-weight:600}
             </div>
           </div>
         </div>
+        <div class="upload-block">
+          <div class="upload-block-head">薪資清冊 PDF（選用）</div>
+          <div class="upload-block-body">
+            <div class="upload-desc">
+              學校薪資印領清冊，供核對金額用。<br>
+              須為系統匯出之電子檔，掃描圖無法解析。<br>
+              支援格式：<span class="em">.pdf</span>
+            </div>
+            <div class="drop-zone" id="drop-pdf"
+                 ondragover="onDragOver(event,'pdf')"
+                 ondragleave="onDragLeave('pdf')"
+                 ondrop="onDrop(event,'pdf')">
+              <input type="file" id="inp-pdf" accept=".pdf" onchange="onFile('pdf',this)">
+              <div class="drop-icon">📄</div>
+              <div class="drop-text">拖曳檔案到此處</div>
+              <div class="drop-hint">或點擊選擇檔案　.pdf</div>
+              <div class="drop-filename" id="name-pdf"></div>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="hint-box">
         <strong>※ 注意：</strong>固定清冊檔的「姓名」欄位須與 AF 資料檔完全一致（含全名、不可有空格），系統以姓名進行比對。若格式不確定，請先下載右上角範例格式參考。
@@ -219,18 +235,44 @@ tbody td.name-col{text-align:left;font-weight:600}
   </div>
 
   <div class="section">
-    <div class="section-head"><span class="step-badge">2</span>執行排序</div>
+    <div class="section-head"><span class="step-badge">2</span>執行作業</div>
     <div class="section-body">
-      <div class="action-bar">
-        <button class="btn-go" id="btn-go" onclick="doProcess()" disabled>執行排序</button>
-        <div class="loader" id="loader"><div class="spin"></div>資料比對處理中，請稍候...</div>
+      <div class="act-order">
+        <strong>建議順序：</strong>先「比對資料」確認 AF 金額與薪資清冊相符，確認無誤後再「執行排序」。
+        資料本身有誤時，排得再整齊也沒有意義。
+      </div>
+      <div class="act-grid">
+        <div class="act-box">
+          <h4>① 比對資料</h4>
+          <div class="d">核對 AF 與薪資清冊的薪俸、專業加給、職務加給、導師加給是否相符。<br>需上傳：AF 資料檔＋薪資清冊 PDF</div>
+          <div class="action-bar">
+            <button class="btn-cmp" id="btn-cmp" onclick="doCompare()" disabled>比對資料</button>
+            <div class="loader" id="cmp-loader"><div class="spin"></div>解析比對中...</div>
+          </div>
+        </div>
+        <div class="act-box">
+          <h4>② 執行排序</h4>
+          <div class="d">依固定清冊的序號重新排列 AF 資料欄位，並產製下載與稽核表。<br>需上傳：固定清冊檔＋AF 資料檔</div>
+          <div class="action-bar">
+            <button class="btn-go" id="btn-go" onclick="doProcess()" disabled>執行排序</button>
+            <div class="loader" id="loader"><div class="spin"></div>排序處理中...</div>
+          </div>
+        </div>
       </div>
       <div class="msg" id="msg"></div>
+      <div class="msg" id="cmp-msg"></div>
+    </div>
+  </div>
+
+  <div class="section" id="compare-section">
+    <div class="section-head"><span class="step-badge">3</span>比對結果</div>
+    <div class="section-body">
+      <div id="cmp-result"></div>
     </div>
   </div>
 
   <div class="section" id="result-section">
-    <div class="section-head"><span class="step-badge">3</span>結果預覽與下載</div>
+    <div class="section-head"><span class="step-badge">4</span>排序結果與下載</div>
     <div class="section-body">
       <div class="result-top">
         <div class="r-stat">比對完成，共 <strong id="stat-total">0</strong> 筆人員</div>
@@ -260,35 +302,6 @@ tbody td.name-col{text-align:left;font-weight:600}
         </table>
       </div>
       <div class="tbl-note" id="tbl-note"></div>
-    </div>
-  </div>
-
-  <div class="section" id="compare-section">
-    <div class="section-head"><span class="step-badge">4</span>薪資清冊比對（選用）</div>
-    <div class="section-body">
-      <div class="upload-desc" style="margin-bottom:12px">
-        上傳學校的<span class="em">薪資印領清冊 PDF</span>，系統會與 AF 資料逐項核對
-        <span class="em">薪俸、專業加給、職務加給、導師加給（含特教加給）</span>四個項目，列出不符之處。<br>
-        需為薪資系統直接匯出的 PDF；掃描的圖檔無法解析。
-      </div>
-      <div class="cmp-top">
-        <div class="cmp-drop" id="drop-pdf"
-             ondragover="onDragOver(event,'pdf')"
-             ondragleave="onDragLeave('pdf')"
-             ondrop="onDrop(event,'pdf')">
-          <input type="file" id="inp-pdf" accept=".pdf" onchange="onFile('pdf',this)">
-          <div class="drop-icon">📄</div>
-          <div class="drop-text">拖曳薪資清冊 PDF 到此處</div>
-          <div class="drop-hint">或點擊選擇檔案　.pdf</div>
-          <div class="drop-filename" id="name-pdf"></div>
-        </div>
-        <button class="btn-cmp" id="btn-cmp" onclick="doCompare()" disabled>執行比對</button>
-      </div>
-      <div class="action-bar" style="margin-top:12px">
-        <div class="loader" id="cmp-loader"><div class="spin"></div>解析 PDF 並比對中，請稍候...</div>
-      </div>
-      <div class="msg" id="cmp-msg"></div>
-      <div id="cmp-result"></div>
     </div>
   </div>
 
@@ -356,9 +369,10 @@ function setFile(key, f) {
   checkReady();
 }
 function checkReady() {
+  // 排序：固定清冊 + AF
   document.getElementById('btn-go').disabled = !(files.roster && files.af);
-  const bc = document.getElementById('btn-cmp');
-  if (bc) bc.disabled = !files.pdf;
+  // 比對：AF + 薪資清冊 PDF
+  document.getElementById('btn-cmp').disabled = !(files.af && files.pdf);
 }
 async function doProcess() {
   const fd = new FormData();
@@ -368,7 +382,6 @@ async function doProcess() {
   document.getElementById('loader').style.display = 'flex';
   document.getElementById('msg').innerHTML = '';
   document.getElementById('result-section').style.display = 'none';
-  document.getElementById('compare-section').style.display = 'none';
   try {
     const res = await fetch('/process', {method:'POST', body:fd});
     const data = await res.json();
@@ -392,7 +405,6 @@ async function doProcess() {
       document.getElementById('btn-audit').style.display = hasSchool ? 'inline-block' : 'none';
 
       renderTable(data.columns, data.preview, data.total);
-      document.getElementById('compare-section').style.display = 'block';
     }
   } catch(e) {
     setMsg('err', '連線失敗：' + e.message);
@@ -466,14 +478,17 @@ function esc(s) {
 }
 
 async function doCompare() {
-  if (!files.pdf) { cmpMsg('err', '請先選擇薪資清冊 PDF'); return; }
+  if (!files.af)  { cmpMsg('err', '請先上傳 AF 資料檔'); return; }
+  if (!files.pdf) { cmpMsg('err', '請先上傳薪資清冊 PDF'); return; }
   const btn = document.getElementById('btn-cmp');
   btn.disabled = true;
   document.getElementById('cmp-loader').style.display = 'flex';
   document.getElementById('cmp-msg').innerHTML = '';
   document.getElementById('cmp-result').innerHTML = '';
+  document.getElementById('compare-section').style.display = 'none';
 
   const fd = new FormData();
+  fd.append('af', files.af);
   fd.append('salary_pdf', files.pdf);
 
   try {
@@ -484,6 +499,7 @@ async function doCompare() {
       return;
     }
     renderCompare(data);
+    document.getElementById('compare-section').style.display = 'block';
   } catch(e) {
     cmpMsg('err', '連線失敗：' + esc(e.message));
   } finally {
