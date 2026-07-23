@@ -32,13 +32,32 @@ _counter_lock = threading.Lock()
 
 
 def _counter_file():
-    """計數檔位置：有掛載 DATA_DIR 就存那裡（重新部署不會歸零），否則存專案目錄"""
-    base = os.environ.get('DATA_DIR') or app.root_path
-    try:
-        os.makedirs(base, exist_ok=True)
-    except Exception:
-        base = tempfile.gettempdir()
-    return os.path.join(base, 'counter.json')
+    """計數檔位置：優先用 DATA_DIR（Volume），不可寫則退回專案目錄／暫存"""
+    for base in (os.environ.get('DATA_DIR', '').strip(), app.root_path, tempfile.gettempdir()):
+        if not base:
+            continue
+        try:
+            os.makedirs(base, exist_ok=True)
+            probe = os.path.join(base, '.write_test')
+            with open(probe, 'w') as f:
+                f.write('1')
+            os.remove(probe)
+            return os.path.join(base, 'counter.json')
+        except Exception:
+            continue
+    return os.path.join(tempfile.gettempdir(), 'counter.json')
+
+
+def counter_diag():
+    """診斷資訊：確認計數檔實際寫到哪裡"""
+    env = os.environ.get('DATA_DIR', '')
+    path = _counter_file()
+    return {
+        'DATA_DIR環境變數': env if env else '（未設定）',
+        '實際使用路徑': path,
+        '是否寫入Volume': bool(env.strip()) and path.startswith(env.strip()),
+        '檔案是否存在': os.path.exists(path),
+    }
 
 
 def load_counter():
@@ -209,6 +228,13 @@ def stats():
     return jsonify(load_counter())
 
 
+@app.route('/stats/diag')
+def stats_diag():
+    d = counter_diag()
+    d['目前計數'] = load_counter()
+    return jsonify(d)
+
+
 @app.route('/download-template')
 def download_template():
     path = os.path.join(app.root_path, 'static', '固定清冊範例.xlsx')
@@ -346,22 +372,14 @@ def compare_pdf():
     except Exception as e:
         return jsonify({'error': '讀取 AF 失敗：' + str(e)}), 500
 
-    # ── 掃描圖檔 → 改走手動輸入 ──
+    # ── 掃描圖檔 → 無法解析 ──
     if not paycheck.has_text_layer(pdf_bytes):
-        ocr_rows = paycheck.ocr_pdf_numbers(pdf_bytes)
-        rows = paycheck.build_manual_rows(af_records, ocr_rows)
         return jsonify({
-            'success': True,
-            'mode': 'manual',
-            'ocr_used': bool(ocr_rows),
-            'ocr_available': paycheck.ocr_available(),
-            'rows': rows,
-            'af_count': len(af_records),
-            'warnings': af_warns,
-            'notice': ('此 PDF 為掃描圖檔，已自動辨識部分數字，請對照紙本確認後再比對。'
-                       if ocr_rows else
-                       '此 PDF 為掃描圖檔，無法自動辨識，請對照紙本填入下列金額後再比對。')
-        })
+            'error': ('此 PDF 為掃描圖檔，無法自動比對。\n'
+                      '請向對方索取薪資系統直接匯出的電子版 PDF；'
+                      '或先用 Adobe Acrobat、Google 雲端硬碟等工具轉成可選取文字的 PDF 再上傳。'),
+            'is_scanned': True
+        }), 422
 
     # ── 有文字層 → 直接解析比對 ──
     try:
@@ -385,29 +403,6 @@ def compare_pdf():
         out['warnings'] = af_warns
         return jsonify(out)
 
-    except Exception as e:
-        return jsonify({'error': '比對錯誤：' + str(e)}), 500
-
-
-@app.route('/compare-manual', methods=['POST'])
-def compare_manual():
-    """手動輸入（或 OCR 校正後）的金額與 AF 比對"""
-    if 'af' not in request.files or not request.files['af'].filename:
-        return jsonify({'error': '請一併上傳 AF 資料檔'}), 400
-    raw = request.form.get('rows')
-    if not raw:
-        return jsonify({'error': '沒有收到輸入資料'}), 400
-
-    try:
-        rows = json.loads(raw)
-        af_records, af_warns = paycheck.load_af(
-            request.files['af'].read(), request.files['af'].filename)
-        out = paycheck.compare_manual(rows, af_records)
-        out['success'] = True
-        out['mode'] = 'manual_result'
-        out['af_count'] = len(af_records)
-        out['warnings'] = af_warns
-        return jsonify(out)
     except Exception as e:
         return jsonify({'error': '比對錯誤：' + str(e)}), 500
 

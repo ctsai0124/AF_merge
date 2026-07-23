@@ -4,8 +4,3 @@ openpyxl
 xlrd
 python-docx
 pdfplumber
-
-# ── 以下為選配：安裝後掃描檔可自動辨識數字，不裝則為純手動輸入 ──
-# 另需系統套件 tesseract-ocr 與 tesseract-ocr-chi-tra
-# opencv-python-headless
-# pytesseract
