@@ -85,6 +85,8 @@ tbody td{padding:6px 12px;border:1px solid #d5dae2;text-align:center;color:#222}
 tbody td.name-col{text-align:left;font-weight:600}
 .tbl-note{font-size:11px;color:#888;margin-top:6px}
 .footer{border-top:1px solid #ccc;padding:8px 24px;font-size:11px;color:#888;text-align:center;flex-shrink:0}
+.counter{display:flex;justify-content:center;gap:22px;flex-wrap:wrap;margin-bottom:5px;font-size:11px;color:#777}
+.counter b{color:#1a3a5c;font-size:13px;font-weight:700;margin-left:3px;font-variant-numeric:tabular-nums}
 .template-link{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#1a3a5c;text-decoration:none;border:1px solid #1a3a5c;padding:3px 10px}
 .template-link:hover{background:#eef3f9}
 .dl-block{display:flex;align-items:flex-start;gap:16px;padding:14px 0;border-bottom:1px solid #e8ecf2}
@@ -333,7 +335,14 @@ tbody td.name-col{text-align:left;font-weight:600}
 
 </div>
 
-<div class="footer">本系統僅供內部作業使用，請勿將資料外傳。</div>
+<div class="footer">
+  <div class="counter">
+    <span>累計使用<b id="c-visits">—</b></span>
+    <span>排序次數<b id="c-sorts">—</b></span>
+    <span>比對次數<b id="c-compares">—</b></span>
+  </div>
+  本系統僅供內部作業使用，請勿將資料外傳。
+</div>
 
 <script>
 const files = {roster: null, af: null, pdf: null};
@@ -405,6 +414,7 @@ async function doProcess() {
       document.getElementById('btn-audit').style.display = hasSchool ? 'inline-block' : 'none';
 
       renderTable(data.columns, data.preview, data.total);
+      setCounts(data.counts);
     }
   } catch(e) {
     setMsg('err', '連線失敗：' + e.message);
@@ -465,6 +475,23 @@ async function printAll() {
   window.open('/print-all', '_blank');
 }
 
+/* ── 使用次數計數器 ── */
+function setCounts(c) {
+  if (!c) return;
+  const m = {visits:'c-visits', sorts:'c-sorts', compares:'c-compares'};
+  for (const k in m) {
+    const el = document.getElementById(m[k]);
+    if (el && c[k] !== undefined) el.textContent = Number(c[k]).toLocaleString('en-US');
+  }
+}
+async function loadCounts() {
+  try {
+    const r = await fetch('/stats');
+    if (r.ok) setCounts(await r.json());
+  } catch(e) { /* 靜默失敗，不影響主功能 */ }
+}
+document.addEventListener('DOMContentLoaded', loadCounts);
+
 /* ── 步驟 4：薪資清冊比對 ── */
 function cmpMsg(type, html) {
   const icons = {ok:'✔', warn:'⚠', err:'✗'};
@@ -499,6 +526,7 @@ async function doCompare() {
       return;
     }
     renderCompare(data);
+    setCounts(data.counts);
     document.getElementById('compare-section').style.display = 'block';
   } catch(e) {
     cmpMsg('err', '連線失敗：' + esc(e.message));
