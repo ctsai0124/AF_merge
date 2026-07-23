@@ -282,11 +282,21 @@ def process():
 
 @app.route('/compare-pdf', methods=['POST'])
 def compare_pdf():
-    """上傳薪資清冊 PDF，與 AF 原始檔比對"""
-    if 'AF_BYTES' not in app.config:
-        return jsonify({'error': '請先上傳並處理 AF 資料'}), 400
+    """薪資清冊 PDF 與 AF 資料比對（可獨立執行，不需先排序）"""
     if 'salary_pdf' not in request.files:
         return jsonify({'error': '請上傳薪資清冊 PDF'}), 400
+
+    # AF 來源：本次上傳優先，否則沿用先前排序時的檔案
+    if 'af' in request.files and request.files['af'].filename:
+        af_f = request.files['af']
+        af_bytes, af_name = af_f.read(), af_f.filename
+        app.config['AF_BYTES'] = af_bytes
+        app.config['AF_NAME'] = af_name
+    elif 'AF_BYTES' in app.config:
+        af_bytes = app.config['AF_BYTES']
+        af_name = app.config.get('AF_NAME', 'af.xls')
+    else:
+        return jsonify({'error': '請上傳 AF 資料檔'}), 400
 
     pdf_bytes = request.files['salary_pdf'].read()
 
@@ -297,8 +307,7 @@ def compare_pdf():
         }), 422
 
     try:
-        af_records, af_warns = paycheck.load_af(
-            app.config['AF_BYTES'], app.config.get('AF_NAME', 'af.xls'))
+        af_records, af_warns = paycheck.load_af(af_bytes, af_name)
         pdf_people, layout = paycheck.parse_pdf(pdf_bytes)
         if not pdf_people:
             return jsonify({'error': 'PDF 解析結果為空，請確認清冊格式'}), 400
