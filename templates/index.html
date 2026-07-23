@@ -129,20 +129,6 @@ tbody td.name-col{text-align:left;font-weight:600}
 .cmp-tbl tr.x td{background:#fff2f2;color:#a32d2d;font-weight:700}
 .cmp-why{font-size:11px;color:#777;margin-top:7px}
 .cmp-ok{border:1px solid #d5dae2;background:#f7f9fb;padding:10px 14px;font-size:12px;color:#444;margin-top:4px}
-.man-note{background:#fffbe6;border:1px solid #d4aa00;padding:9px 13px;font-size:12px;color:#5a3e00;line-height:1.7;margin-bottom:12px}
-.man-wrap{overflow-x:auto;border:1px solid #b0b8c4;margin-bottom:12px}
-.man-tbl{border-collapse:collapse;font-size:12px;width:100%;white-space:nowrap}
-.man-tbl th{background:#1a3a5c;color:#fff;padding:6px 8px;text-align:center;font-weight:700;font-size:11px;position:sticky;top:0}
-.man-tbl td{border:1px solid #d5dae2;padding:3px 5px;text-align:center}
-.man-tbl td.nm{text-align:left;font-weight:600;padding-left:9px;background:#f7f9fb}
-.man-tbl td.dp{font-size:11px;color:#777;background:#f7f9fb}
-.man-tbl input{width:78px;padding:4px 6px;border:1px solid #cfd6de;font-size:12px;text-align:right;font-family:inherit}
-.man-tbl input:focus{outline:none;border-color:#1a3a5c;background:#fffdf0}
-.man-tbl tr.sum-ok td.chk{color:#1a4d2a;font-weight:700}
-.man-tbl tr.sum-bad td.chk{color:#a32d2d;font-weight:700}
-.man-tbl tr.sum-bad input{border-color:#e0aaaa}
-.man-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
-.man-hint{font-size:11px;color:#777;line-height:1.7}
 .cmp-ok summary{cursor:pointer;font-weight:700;color:#1a4d2a}
 .cmp-ok .names{margin-top:8px;line-height:1.9;color:#555}
 @media print{
@@ -491,87 +477,6 @@ async function printAll() {
   window.open('/print-all', '_blank');
 }
 
-/* ── 掃描檔：手動輸入比對 ── */
-const MAN_FIELDS = ['薪俸','專業加給','主管加給','導師特教'];
-let manRows = [];
-
-function renderManual(d) {
-  manRows = d.rows;
-  let h = '<div class="man-note">⚠ ' + esc(d.notice);
-  if (!d.ocr_available) {
-    h += '<br><span style="font-size:11px">（伺服器未安裝文字辨識套件，故無法預先填入）</span>';
-  }
-  h += '</div>';
-
-  h += '<div class="man-bar">'
-     + '<button class="btn-cmp" onclick="submitManual()">確認並比對</button>'
-     + '<span class="man-hint">照紙本填入四個項目金額，留白代表清冊無此人。<br>'
-     + '填入「應發金額」可自動檢查加總是否正確（選填）。</span></div>';
-
-  h += '<div class="man-wrap"><table class="man-tbl"><thead><tr>'
-     + '<th>姓名</th><th>單位</th><th>薪俸</th><th>專業加給</th>'
-     + '<th>職務加給</th><th>導師＋特教</th><th>應發金額</th><th>加總</th>'
-     + '</tr></thead><tbody>';
-
-  d.rows.forEach((r, i) => {
-    h += '<tr id="mr' + i + '"><td class="nm">' + esc(r['姓名']) + '</td>'
-       + '<td class="dp">' + esc(r['單位'] || '') + '</td>';
-    MAN_FIELDS.forEach(f => {
-      h += '<td><input type="text" inputmode="numeric" data-i="' + i + '" data-f="' + f
-         + '" value="' + (r[f] === '' ? '' : r[f]) + '" oninput="onManInput(this)"></td>';
-    });
-    h += '<td><input type="text" inputmode="numeric" data-i="' + i + '" data-f="應發金額"'
-       + ' value="' + (r['應發金額'] === '' ? '' : r['應發金額']) + '" oninput="onManInput(this)"></td>'
-       + '<td class="chk" id="mc' + i + '">—</td></tr>';
-  });
-  h += '</tbody></table></div>';
-  document.getElementById('cmp-result').innerHTML = h;
-  document.getElementById('compare-section').style.display = 'block';
-  d.rows.forEach((_, i) => checkSum(i));
-}
-
-function onManInput(el) {
-  const i = +el.dataset.i;
-  manRows[i][el.dataset.f] = el.value.replace(/[^0-9]/g, '');
-  if (el.value !== manRows[i][el.dataset.f]) el.value = manRows[i][el.dataset.f];
-  checkSum(i);
-}
-
-function checkSum(i) {
-  const r = manRows[i], cell = document.getElementById('mc' + i), tr = document.getElementById('mr' + i);
-  if (!cell || !tr) return;
-  const total = parseInt(r['應發金額'] || 0) || 0;
-  tr.classList.remove('sum-ok','sum-bad');
-  if (!total) { cell.textContent = '—'; return; }
-  let s = 0;
-  MAN_FIELDS.forEach(f => s += parseInt(r[f] || 0) || 0);
-  if (s === total) { cell.textContent = '✔'; tr.classList.add('sum-ok'); }
-  else { cell.textContent = (total - s > 0 ? '+' : '') + (total - s).toLocaleString('en-US');
-         tr.classList.add('sum-bad'); }
-}
-
-async function submitManual() {
-  const bad = manRows.filter((_, i) =>
-    document.getElementById('mr' + i)?.classList.contains('sum-bad')).length;
-  if (bad && !confirm('有 ' + bad + ' 列加總與應發金額不符，可能是填錯或辨識錯誤。仍要繼續比對嗎？')) return;
-
-  const fd = new FormData();
-  fd.append('af', files.af);
-  fd.append('rows', JSON.stringify(manRows));
-  document.getElementById('cmp-loader').style.display = 'flex';
-  try {
-    const res = await fetch('/compare-manual', {method:'POST', body:fd});
-    const data = await res.json();
-    if (!res.ok || !data.success) { cmpMsg('err', esc(data.error || '比對失敗')); return; }
-    renderCompare(data);
-    setCounts(data.counts);
-  } catch(e) {
-    cmpMsg('err', '連線失敗：' + esc(e.message));
-  } finally {
-    document.getElementById('cmp-loader').style.display = 'none';
-  }
-}
-
 /* ── 使用次數計數器 ── */
 function setCounts(c) {
   if (!c) return;
@@ -622,17 +527,9 @@ async function doCompare() {
       cmpMsg('err', esc(data.error || '比對失敗'));
       return;
     }
-    if (data.mode === 'manual') {
-      if (data.warnings && data.warnings.length) {
-        document.getElementById('cmp-msg').innerHTML =
-          data.warnings.map(w => '<div class="warn-msg">⚠ ' + esc(w) + '</div>').join('');
-      }
-      renderManual(data);
-    } else {
-      renderCompare(data);
-      setCounts(data.counts);
-      document.getElementById('compare-section').style.display = 'block';
-    }
+    renderCompare(data);
+    setCounts(data.counts);
+    document.getElementById('compare-section').style.display = 'block';
   } catch(e) {
     cmpMsg('err', '連線失敗：' + esc(e.message));
   } finally {
