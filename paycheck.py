@@ -1,5 +1,5 @@
 """薪資清冊 PDF × AF 校對清冊 比對模組"""
-import io, os, re, subprocess, tempfile
+import io, os, re, tempfile
 from difflib import get_close_matches
 
 import pandas as pd
@@ -97,11 +97,18 @@ SKIP_NAME = ('小計', '合計', '總計', '備註', '出納', '人事', '會計
 
 
 def has_text_layer(file_bytes):
+    """判斷 PDF 有無文字層（純 Python，不需系統套件）"""
+    import pdfplumber
     tmp = tempfile.NamedTemporaryFile(suffix='.pdf', delete=False)
     tmp.write(file_bytes); tmp.close()
     try:
-        out = subprocess.run(['pdffonts', tmp.name], capture_output=True, text=True)
-        return len(out.stdout.strip().split('\n')) > 2
+        with pdfplumber.open(tmp.name) as pdf:
+            for page in pdf.pages[:3]:
+                if (page.extract_text() or '').strip():
+                    return True
+        return False
+    except Exception:
+        return False
     finally:
         os.unlink(tmp.name)
 
