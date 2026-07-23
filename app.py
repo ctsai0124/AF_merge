@@ -299,8 +299,6 @@ def process():
         sn1, yearmonth = parse_af_filename(af_f.filename)
         school_name, sn2 = lookup_school(sn1)
 
-        app.config['AF_BYTES'] = af_bytes
-        app.config['AF_NAME'] = af_f.filename
         app.config['LAST_RESULT'] = result_df.fillna('').to_json(orient='records', force_ascii=False)
         app.config['LAST_COLUMNS'] = result_df.columns.tolist()
         app.config['LAST_SCHOOL'] = school_name
@@ -331,48 +329,85 @@ def process():
 
 @app.route('/compare-pdf', methods=['POST'])
 def compare_pdf():
-    """薪資清冊 PDF 與 AF 資料比對（可獨立執行，不需先排序）"""
+    """薪資清冊 PDF 與 AF 比對；掃描檔則回傳手動輸入表格"""
     if 'salary_pdf' not in request.files:
         return jsonify({'error': '請上傳薪資清冊 PDF'}), 400
-
-    # AF 來源：本次上傳優先，否則沿用先前排序時的檔案
-    if 'af' in request.files and request.files['af'].filename:
-        af_f = request.files['af']
-        af_bytes, af_name = af_f.read(), af_f.filename
-        app.config['AF_BYTES'] = af_bytes
-        app.config['AF_NAME'] = af_name
-    elif 'AF_BYTES' in app.config:
-        af_bytes = app.config['AF_BYTES']
-        af_name = app.config.get('AF_NAME', 'af.xls')
-    else:
+    if 'af' not in request.files or not request.files['af'].filename:
         return jsonify({'error': '請上傳 AF 資料檔'}), 400
 
+    af_f = request.files['af']
+    af_bytes, af_name = af_f.read(), af_f.filename
     pdf_bytes = request.files['salary_pdf'].read()
-
-    if not paycheck.has_text_layer(pdf_bytes):
-        return jsonify({
-            'error': '此 PDF 為掃描圖檔，無法自動解析。請向對方索取系統匯出的電子版 PDF。',
-            'is_scanned': True
-        }), 422
 
     try:
         af_records, af_warns = paycheck.load_af(af_bytes, af_name)
+    except KeyError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'error': '讀取 AF 失敗：' + str(e)}), 500
+
+    # ── 掃描圖檔 → 改走手動輸入 ──
+    if not paycheck.has_text_layer(pdf_bytes):
+        ocr_rows = paycheck.ocr_pdf_numbers(pdf_bytes)
+        rows = paycheck.build_manual_rows(af_records, ocr_rows)
+        return jsonify({
+            'success': True,
+            'mode': 'manual',
+            'ocr_used': bool(ocr_rows),
+            'ocr_available': paycheck.ocr_available(),
+            'rows': rows,
+            'af_count': len(af_records),
+            'warnings': af_warns,
+            'notice': ('此 PDF 為掃描圖檔，已自動辨識部分數字，請對照紙本確認後再比對。'
+                       if ocr_rows else
+                       '此 PDF 為掃描圖檔，無法自動辨識，請對照紙本填入下列金額後再比對。')
+        })
+
+    # ── 有文字層 → 直接解析比對 ──
+    try:
         pdf_people, layout = paycheck.parse_pdf(pdf_bytes)
         if not pdf_people:
             return jsonify({'error': 'PDF 解析結果為空，請確認清冊格式'}), 400
 
+        paycheck.annotate_arith(pdf_people)
+        bad_arith = [p['姓名'] for p in pdf_people if p.get('_arith_ok') is False]
+        if bad_arith:
+            af_warns.append('薪資清冊本身加總不符（各項相加 ≠ 應發金額）：'
+                            + '、'.join(bad_arith) + '，請先確認清冊是否正確')
+
         out = paycheck.compare(pdf_people, af_records)
         out['success'] = True
+        out['mode'] = 'auto'
         out['layout'] = {'vertical': '直式（一人一欄）',
                          'horizontal': '橫式（一人一列）'}.get(layout, layout)
         out['af_count'] = len(af_records)
         out['pdf_count'] = len(pdf_people)
         out['warnings'] = af_warns
-        out['counts'] = bump_counter('compares')
         return jsonify(out)
 
-    except KeyError as e:
-        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'error': '比對錯誤：' + str(e)}), 500
+
+
+@app.route('/compare-manual', methods=['POST'])
+def compare_manual():
+    """手動輸入（或 OCR 校正後）的金額與 AF 比對"""
+    if 'af' not in request.files or not request.files['af'].filename:
+        return jsonify({'error': '請一併上傳 AF 資料檔'}), 400
+    raw = request.form.get('rows')
+    if not raw:
+        return jsonify({'error': '沒有收到輸入資料'}), 400
+
+    try:
+        rows = json.loads(raw)
+        af_records, af_warns = paycheck.load_af(
+            request.files['af'].read(), request.files['af'].filename)
+        out = paycheck.compare_manual(rows, af_records)
+        out['success'] = True
+        out['mode'] = 'manual_result'
+        out['af_count'] = len(af_records)
+        out['warnings'] = af_warns
+        return jsonify(out)
     except Exception as e:
         return jsonify({'error': '比對錯誤：' + str(e)}), 500
 
