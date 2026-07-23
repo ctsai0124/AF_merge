@@ -2,7 +2,7 @@ from flask import Flask, request, jsonify, render_template, send_file
 import pandas as pd
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-import io, os, json, re
+import io, os, json, re, tempfile, subprocess
 from docx import Document
 from docx.oxml.ns import qn
 
@@ -23,9 +23,12 @@ NUM_COLS = {'清冊序號', '總金額', '支領數額', '待遇差額', '補發
             '總金額.2', '支領數額.2', '待遇差額.2', '補發金額.2',
             '總金額.3', '支領數額.3', '待遇差額.3', '補發金額.3'}
 
+# ── PDF 比對：見 paycheck.py ──
+import paycheck
+
+# ── 原有功能 ──────────────────────────────────────────────
 
 def load_school_df():
-    """載入學校對照表"""
     path = os.path.join(app.root_path, 'static', 'school.xlsx')
     if not os.path.exists(path):
         return pd.DataFrame(columns=['sn1', 'sn2', 'school'])
@@ -33,22 +36,20 @@ def load_school_df():
 
 
 def parse_af_filename(filename):
-    """從 AF 檔案名稱擷取 sn1（機關代碼）和年月份"""
     base = os.path.splitext(filename)[0]
     parts = base.split('_')
     sn1 = ''
     yearmonth = ''
     if len(parts) >= 2:
-        sn1 = parts[-2]           # 倒數第二段，例如 397085000Y
+        sn1 = parts[-2]
     if len(parts) >= 1:
-        ts = parts[-1]            # 最後一段，例如 1150320101641635
+        ts = parts[-1]
         if len(ts) >= 5:
-            yearmonth = ts[:5]    # 前5碼，例如 11503
+            yearmonth = ts[:5]
     return sn1, yearmonth
 
 
 def lookup_school(sn1):
-    """根據 sn1 查詢學校名稱和 sn2"""
     df = load_school_df()
     if df.empty or not sn1:
         return '', ''
@@ -121,7 +122,6 @@ def build_excel(data, columns):
 
 
 def replace_in_element(element, old, new):
-    """替換 XML element 內所有含 old 的文字，支援跨 run"""
     for para in element.findall('.//' + qn('w:p')):
         runs = para.findall(qn('w:r'))
         texts = []
@@ -143,25 +143,20 @@ def replace_in_element(element, old, new):
 
 
 def build_audit_docx(school_name, sn2, yearmonth):
-    """產製填好資料的稽核表 Word 檔"""
     template_path = os.path.join(app.root_path, 'static', '稽核表-.docx')
     doc = Document(template_path)
-
-    # 替換表格內的佔位符
     replace_in_element(doc.element.body, '<學校名稱>', school_name)
     replace_in_element(doc.element.body, '<年月份>', yearmonth)
-
-    # 替換文字方塊內的 <編號>
     for txbx in doc.element.body.findall('.//' + qn('w:txbxContent')):
         para_texts = ''.join(t.text or '' for t in txbx.findall('.//' + qn('w:t')))
         if '<編號>' in para_texts:
             replace_in_element(txbx, '<編號>', sn2)
-
     out = io.BytesIO()
     doc.save(out)
     out.seek(0)
     return out
 
+# ── 路由 ──────────────────────────────────────────────────
 
 @app.route('/')
 def index():
@@ -201,6 +196,7 @@ def process():
         roster_df = roster_df.dropna(subset=['序號', '姓名'])
         roster_df = roster_df[roster_df['姓名'] != '']
         roster_df = roster_df.sort_values('序號')
+        dup_roster = roster_df[roster_df.duplicated('姓名', keep=False)]['姓名'].unique().tolist()
         ordered_names = roster_df['姓名'].tolist()
         name_to_seq = {row['姓名']: int(row['序號']) for _, row in roster_df.iterrows()}
 
@@ -251,11 +247,14 @@ def process():
             warnings.append('清冊中以下人員在 AF 找不到對應：' + '、'.join(not_found))
         if extra_names:
             warnings.append('AF 中以下人員不在清冊內，已附加至末尾：' + '、'.join(extra_names))
+        if dup_roster:
+            warnings.append('清冊中以下姓名出現多次，請確認是重複登打或同名不同人：' + '、'.join(dup_roster))
 
-        # 從 AF 檔名查詢學校資訊
         sn1, yearmonth = parse_af_filename(af_f.filename)
         school_name, sn2 = lookup_school(sn1)
 
+        app.config['AF_BYTES'] = af_bytes
+        app.config['AF_NAME'] = af_f.filename
         app.config['LAST_RESULT'] = result_df.fillna('').to_json(orient='records', force_ascii=False)
         app.config['LAST_COLUMNS'] = result_df.columns.tolist()
         app.config['LAST_SCHOOL'] = school_name
@@ -278,6 +277,48 @@ def process():
     except Exception as e:
         return jsonify({'error': '處理錯誤：' + str(e)}), 500
 
+
+# ── 新增：薪資清冊 PDF 比對 ────────────────────────────────
+
+@app.route('/compare-pdf', methods=['POST'])
+def compare_pdf():
+    """上傳薪資清冊 PDF，與 AF 原始檔比對"""
+    if 'AF_BYTES' not in app.config:
+        return jsonify({'error': '請先上傳並處理 AF 資料'}), 400
+    if 'salary_pdf' not in request.files:
+        return jsonify({'error': '請上傳薪資清冊 PDF'}), 400
+
+    pdf_bytes = request.files['salary_pdf'].read()
+
+    if not paycheck.has_text_layer(pdf_bytes):
+        return jsonify({
+            'error': '此 PDF 為掃描圖檔，無法自動解析。請向對方索取系統匯出的電子版 PDF。',
+            'is_scanned': True
+        }), 422
+
+    try:
+        af_records, af_warns = paycheck.load_af(
+            app.config['AF_BYTES'], app.config.get('AF_NAME', 'af.xls'))
+        pdf_people, layout = paycheck.parse_pdf(pdf_bytes)
+        if not pdf_people:
+            return jsonify({'error': 'PDF 解析結果為空，請確認清冊格式'}), 400
+
+        out = paycheck.compare(pdf_people, af_records)
+        out['success'] = True
+        out['layout'] = {'vertical': '直式（一人一欄）',
+                         'horizontal': '橫式（一人一列）'}.get(layout, layout)
+        out['af_count'] = len(af_records)
+        out['pdf_count'] = len(pdf_people)
+        out['warnings'] = af_warns
+        return jsonify(out)
+
+    except KeyError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'error': '比對錯誤：' + str(e)}), 500
+
+
+# ── 原有下載 / 列印路由 ────────────────────────────────────
 
 @app.route('/download-simple')
 def download_simple():
@@ -315,22 +356,19 @@ def download_result():
 
 
 def _docx_to_pdf():
-    """將填好資料的稽核表 Word 檔轉成 PDF，回傳 bytes，失敗回傳 None"""
-    import subprocess, tempfile, shutil
     school_name = app.config.get('LAST_SCHOOL', '')
     sn2 = app.config.get('LAST_SN2', '')
     yearmonth = app.config.get('LAST_YEARMONTH', '')
     try:
         docx_buf = build_audit_docx(school_name, sn2, yearmonth)
-        docx_buf.seek(0)  # 確保從頭讀取
+        docx_buf.seek(0)
         tmpdir = tempfile.mkdtemp()
         docx_path = os.path.join(tmpdir, 'audit.docx')
         pdf_path = os.path.join(tmpdir, 'audit.pdf')
         with open(docx_path, 'wb') as f:
             f.write(docx_buf.read())
         result = subprocess.run(
-            ['libreoffice', '--headless', '--convert-to', 'pdf',
-             '--outdir', tmpdir, docx_path],
+            ['libreoffice', '--headless', '--convert-to', 'pdf', '--outdir', tmpdir, docx_path],
             capture_output=True, timeout=60
         )
         if result.returncode != 0 or not os.path.exists(pdf_path):
@@ -338,6 +376,7 @@ def _docx_to_pdf():
             return None
         with open(pdf_path, 'rb') as f:
             pdf_bytes = f.read()
+        import shutil
         shutil.rmtree(tmpdir, ignore_errors=True)
         return pdf_bytes
     except Exception as e:
@@ -346,7 +385,6 @@ def _docx_to_pdf():
 
 
 def _build_audit_html(school_name, sn2, yearmonth, data):
-    """產生稽核表的 HTML 片段（供列印用）"""
     rows_html = ''
     for row in data:
         rows_html += f'''<tr>
@@ -372,19 +410,17 @@ def _build_audit_html(school_name, sn2, yearmonth, data):
       <th colspan="2" style="border:1px solid #333;padding:6px 10px;background:#1a3a5c;color:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact">地域加給</th>
     </tr>
     <tr>
-      <th style="border:1px solid #333;padding:6px 8px;background:#1a3a5c;color:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact">表別</th>
-      <th style="border:1px solid #333;padding:6px 8px;background:#1a3a5c;color:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact">支領數額</th>
-      <th style="border:1px solid #333;padding:6px 8px;background:#1a3a5c;color:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact">表別</th>
-      <th style="border:1px solid #333;padding:6px 8px;background:#1a3a5c;color:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact">支領數額</th>
-      <th style="border:1px solid #333;padding:6px 8px;background:#1a3a5c;color:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact">表別</th>
-      <th style="border:1px solid #333;padding:6px 8px;background:#1a3a5c;color:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact">支領數額</th>
-      <th style="border:1px solid #333;padding:6px 8px;background:#1a3a5c;color:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact">表別</th>
-      <th style="border:1px solid #333;padding:6px 8px;background:#1a3a5c;color:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact">支領數額</th>
+      <th style="border:1px solid #333;padding:6px 8px;background:#1a3a5c;color:#fff;">表別</th>
+      <th style="border:1px solid #333;padding:6px 8px;background:#1a3a5c;color:#fff;">支領數額</th>
+      <th style="border:1px solid #333;padding:6px 8px;background:#1a3a5c;color:#fff;">表別</th>
+      <th style="border:1px solid #333;padding:6px 8px;background:#1a3a5c;color:#fff;">支領數額</th>
+      <th style="border:1px solid #333;padding:6px 8px;background:#1a3a5c;color:#fff;">表別</th>
+      <th style="border:1px solid #333;padding:6px 8px;background:#1a3a5c;color:#fff;">支領數額</th>
+      <th style="border:1px solid #333;padding:6px 8px;background:#1a3a5c;color:#fff;">表別</th>
+      <th style="border:1px solid #333;padding:6px 8px;background:#1a3a5c;color:#fff;">支領數額</th>
     </tr>
   </thead>
-  <tbody style="font-size:12px">
-    {rows_html}
-  </tbody>
+  <tbody style="font-size:12px">{rows_html}</tbody>
 </table>'''
 
 
