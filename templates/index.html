@@ -94,7 +94,43 @@ tbody td.name-col{text-align:left;font-weight:600}
 .dl-info{flex:1}
 .dl-title{font-size:13px;font-weight:700;color:#1a3a5c;margin-bottom:4px}
 .dl-desc{font-size:11px;color:#555;line-height:1.7;margin-bottom:8px}
-/* 列印樣式 */
+
+/* ── 步驟 4：薪資清冊比對 ── */
+#compare-section{display:none}
+.cmp-top{display:grid;grid-template-columns:1fr auto;gap:16px;align-items:start}
+.cmp-drop{border:2px dashed #b0b8c4;padding:16px 14px;text-align:center;cursor:pointer;background:#fafafa;transition:.2s;position:relative}
+.cmp-drop:hover{background:#f0f4f8;border-color:#1a3a5c}
+.cmp-drop.drag-over{background:#e8f0f8;border-color:#1a3a5c}
+.cmp-drop.done{background:#f0f6f0;border-color:#2a6e3f;border-style:solid}
+.cmp-drop input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
+.cmp-drop.done .drop-text,.cmp-drop.done .drop-hint{display:none}
+.cmp-drop.done .drop-icon{color:#2a6e3f}
+.btn-cmp{background:#1a3a5c;color:#fff;border:none;padding:8px 26px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;letter-spacing:.5px;transition:.15s;white-space:nowrap}
+.btn-cmp:hover{background:#122840}
+.btn-cmp:disabled{background:#aaa;cursor:default}
+.cmp-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;margin:16px 0 14px}
+.cmp-card{border:1px solid #d5dae2;background:#f7f9fb;padding:10px 12px;text-align:center}
+.cmp-card .lbl{font-size:11px;color:#666;margin-bottom:3px}
+.cmp-card .val{font-size:20px;font-weight:700;line-height:1.2}
+.cmp-meta{font-size:11px;color:#777;margin-bottom:10px;line-height:1.7}
+.cmp-row{border:1px solid #d5dae2;padding:10px 14px;margin-bottom:8px;background:#fff}
+.cmp-row.bad{border-color:#cc5555;border-left:4px solid #cc5555}
+.cmp-row.only{border-color:#d4aa00;border-left:4px solid #d4aa00}
+.cmp-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap;font-size:13px}
+.cmp-name{font-weight:700;color:#1a3a5c;font-size:14px}
+.cmp-sub{font-size:11px;color:#777}
+.cmp-tag{margin-left:auto;font-size:11px;padding:2px 9px;font-weight:700}
+.cmp-tag.d{background:#fff2f2;color:#a32d2d;border:1px solid #e0aaaa}
+.cmp-tag.o{background:#fffbe6;color:#8a5a11;border:1px solid #ddc47a}
+.cmp-tbl{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px;white-space:normal}
+.cmp-tbl th{background:#eef2f7;color:#555;font-weight:700;padding:5px 8px;border:1px solid #d5dae2;text-align:center;font-size:11px;position:static}
+.cmp-tbl td{padding:5px 8px;border:1px solid #d5dae2;text-align:center;color:#222}
+.cmp-tbl td.f{text-align:left}
+.cmp-tbl tr.x td{background:#fff2f2;color:#a32d2d;font-weight:700}
+.cmp-why{font-size:11px;color:#777;margin-top:7px}
+.cmp-ok{border:1px solid #d5dae2;background:#f7f9fb;padding:10px 14px;font-size:12px;color:#444;margin-top:4px}
+.cmp-ok summary{cursor:pointer;font-weight:700;color:#1a4d2a}
+.cmp-ok .names{margin-top:8px;line-height:1.9;color:#555}
 @media print{
   .header,.section:not(#result-section),.footer,.dl-btn-row,.result-top,.tbl-note{display:none!important}
   #result-section{display:block!important;border:none}
@@ -106,6 +142,7 @@ tbody td.name-col{text-align:left;font-weight:600}
 }
 @media(max-width:640px){
   .upload-row{grid-template-columns:1fr}
+  .cmp-top{grid-template-columns:1fr}
   .header{padding:10px 16px}
   .container{padding:16px}
   .header-right{display:none}
@@ -122,7 +159,7 @@ tbody td.name-col{text-align:left;font-weight:600}
       <div class="header-sub">依薪資清冊序號自動重新排列 AF 資料欄位</div>
     </div>
   </div>
-  <div class="header-right">系統版本：v1.1<br>114 年度適用</div>
+  <div class="header-right">系統版本：v1.2<br>115 年度適用</div>
 </div>
 
 <div class="container">
@@ -226,6 +263,35 @@ tbody td.name-col{text-align:left;font-weight:600}
     </div>
   </div>
 
+  <div class="section" id="compare-section">
+    <div class="section-head"><span class="step-badge">4</span>薪資清冊比對（選用）</div>
+    <div class="section-body">
+      <div class="upload-desc" style="margin-bottom:12px">
+        上傳學校的<span class="em">薪資印領清冊 PDF</span>，系統會與 AF 資料逐項核對
+        <span class="em">薪俸、專業加給、職務加給、導師加給（含特教加給）</span>四個項目，列出不符之處。<br>
+        需為薪資系統直接匯出的 PDF；掃描的圖檔無法解析。
+      </div>
+      <div class="cmp-top">
+        <div class="cmp-drop" id="drop-pdf"
+             ondragover="onDragOver(event,'pdf')"
+             ondragleave="onDragLeave('pdf')"
+             ondrop="onDrop(event,'pdf')">
+          <input type="file" id="inp-pdf" accept=".pdf" onchange="onFile('pdf',this)">
+          <div class="drop-icon">📄</div>
+          <div class="drop-text">拖曳薪資清冊 PDF 到此處</div>
+          <div class="drop-hint">或點擊選擇檔案　.pdf</div>
+          <div class="drop-filename" id="name-pdf"></div>
+        </div>
+        <button class="btn-cmp" id="btn-cmp" onclick="doCompare()" disabled>執行比對</button>
+      </div>
+      <div class="action-bar" style="margin-top:12px">
+        <div class="loader" id="cmp-loader"><div class="spin"></div>解析 PDF 並比對中，請稍候...</div>
+      </div>
+      <div class="msg" id="cmp-msg"></div>
+      <div id="cmp-result"></div>
+    </div>
+  </div>
+
   <div class="section">
     <div class="section-head-gray">工具下載</div>
     <div class="section-body">
@@ -257,7 +323,7 @@ tbody td.name-col{text-align:left;font-weight:600}
 <div class="footer">本系統僅供內部作業使用，請勿將資料外傳。</div>
 
 <script>
-const files = {roster: null, af: null};
+const files = {roster: null, af: null, pdf: null};
 let simpleCols = [];
 
 function onDragOver(e, key) {
@@ -279,8 +345,9 @@ function onFile(key, input) {
 }
 function setFile(key, f) {
   const ext = f.name.split('.').pop().toLowerCase();
-  if (!['xlsx','xls'].includes(ext)) {
-    alert('請上傳 .xlsx 或 .xls 格式的檔案');
+  const allow = key === 'pdf' ? ['pdf'] : ['xlsx','xls'];
+  if (!allow.includes(ext)) {
+    alert('請上傳 ' + allow.map(e => '.' + e).join(' 或 ') + ' 格式的檔案');
     return;
   }
   files[key] = f;
@@ -290,6 +357,8 @@ function setFile(key, f) {
 }
 function checkReady() {
   document.getElementById('btn-go').disabled = !(files.roster && files.af);
+  const bc = document.getElementById('btn-cmp');
+  if (bc) bc.disabled = !files.pdf;
 }
 async function doProcess() {
   const fd = new FormData();
@@ -299,6 +368,7 @@ async function doProcess() {
   document.getElementById('loader').style.display = 'flex';
   document.getElementById('msg').innerHTML = '';
   document.getElementById('result-section').style.display = 'none';
+  document.getElementById('compare-section').style.display = 'none';
   try {
     const res = await fetch('/process', {method:'POST', body:fd});
     const data = await res.json();
@@ -322,6 +392,7 @@ async function doProcess() {
       document.getElementById('btn-audit').style.display = hasSchool ? 'inline-block' : 'none';
 
       renderTable(data.columns, data.preview, data.total);
+      document.getElementById('compare-section').style.display = 'block';
     }
   } catch(e) {
     setMsg('err', '連線失敗：' + e.message);
@@ -352,14 +423,19 @@ function renderTable(cols, rows, total) {
   document.getElementById('result-section').style.display = 'block';
 }
 function resetAll() {
-  files.roster = null; files.af = null;
-  ['roster','af'].forEach(k => {
-    document.getElementById('inp-' + k).value = '';
+  files.roster = null; files.af = null; files.pdf = null;
+  ['roster','af','pdf'].forEach(k => {
+    const inp = document.getElementById('inp-' + k);
+    if (!inp) return;
+    inp.value = '';
     document.getElementById('drop-' + k).classList.remove('done','drag-over');
     document.getElementById('name-' + k).textContent = '';
   });
   document.getElementById('msg').innerHTML = '';
+  document.getElementById('cmp-msg').innerHTML = '';
+  document.getElementById('cmp-result').innerHTML = '';
   document.getElementById('result-section').style.display = 'none';
+  document.getElementById('compare-section').style.display = 'none';
   document.getElementById('btn-audit').style.display = 'none';
   document.getElementById('school-title').textContent = '';
   checkReady();
@@ -375,6 +451,126 @@ async function printAudit() {
 
 async function printAll() {
   window.open('/print-all', '_blank');
+}
+
+/* ── 步驟 4：薪資清冊比對 ── */
+function cmpMsg(type, html) {
+  const icons = {ok:'✔', warn:'⚠', err:'✗'};
+  document.getElementById('cmp-msg').innerHTML =
+    '<div class="' + type + '-msg">' + icons[type] + ' ' + html + '</div>';
+}
+function nf(n) { return (n || 0).toLocaleString('en-US'); }
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"]/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+
+async function doCompare() {
+  if (!files.pdf) { cmpMsg('err', '請先選擇薪資清冊 PDF'); return; }
+  const btn = document.getElementById('btn-cmp');
+  btn.disabled = true;
+  document.getElementById('cmp-loader').style.display = 'flex';
+  document.getElementById('cmp-msg').innerHTML = '';
+  document.getElementById('cmp-result').innerHTML = '';
+
+  const fd = new FormData();
+  fd.append('salary_pdf', files.pdf);
+
+  try {
+    const res = await fetch('/compare-pdf', {method:'POST', body:fd});
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      cmpMsg('err', esc(data.error || '比對失敗'));
+      return;
+    }
+    renderCompare(data);
+  } catch(e) {
+    cmpMsg('err', '連線失敗：' + esc(e.message));
+  } finally {
+    btn.disabled = false;
+    document.getElementById('cmp-loader').style.display = 'none';
+  }
+}
+
+function renderCompare(d) {
+  const s = d.summary;
+  const bad = s['有差異'] + s['清冊有AF無'] + s['AF有清冊無'] + (s['待人工指定'] || 0);
+  if (d.warnings && d.warnings.length) {
+    document.getElementById('cmp-msg').innerHTML =
+      d.warnings.map(w => '<div class="warn-msg">⚠ ' + esc(w) + '</div>').join('');
+  } else if (bad === 0) {
+    cmpMsg('ok', '比對完成，全部 ' + s['一致'] + ' 人四個項目均與 AF 相符。');
+  } else {
+    document.getElementById('cmp-msg').innerHTML = '';
+  }
+
+  let h = '<div class="cmp-meta">清冊版面：' + esc(d.layout)
+        + '　│　清冊 ' + d.pdf_count + ' 人　│　AF ' + d.af_count + ' 人</div>';
+
+  h += '<div class="cmp-cards">'
+     + card('一致', s['一致'], '#1a4d2a')
+     + card('有差異', s['有差異'], '#a32d2d')
+     + card('清冊有 AF 無', s['清冊有AF無'], '#8a5a11')
+     + card('AF 有清冊無', s['AF有清冊無'], '#5a6a7a')
+     + (s['待人工指定'] ? card('待人工指定', s['待人工指定'], '#a32d2d') : '')
+     + '</div>';
+
+  const okNames = [];
+  d.results.forEach(r => {
+    if (r['狀態'] === 'ok') { okNames.push(r['姓名']); return; }
+
+    if (r['狀態'] === 'diff') {
+      h += '<div class="cmp-row bad"><div class="cmp-head">'
+         + '<span class="cmp-name">' + esc(r['姓名']) + '</span>'
+         + '<span class="cmp-sub">' + esc(r['職稱'] || r['單位'] || '') + '</span>'
+         + '<span class="cmp-tag d">' + r['差異'].length + ' 項不符</span></div>'
+         + '<table class="cmp-tbl"><thead><tr>'
+         + '<th style="text-align:left">項目</th><th>薪資清冊</th><th>AF 資料</th><th>差額</th>'
+         + '</tr></thead><tbody>';
+      r['差異'].forEach(x => {
+        const sign = x['差額'] > 0 ? '+' : '';
+        h += '<tr class="x"><td class="f">' + esc(x['欄位']) + '</td>'
+           + '<td>' + nf(x['清冊']) + '</td><td>' + nf(x['AF']) + '</td>'
+           + '<td>' + sign + nf(x['差額']) + '</td></tr>';
+      });
+      h += '</tbody></table>';
+      if (r['配對依據'] && r['配對依據'] !== '姓名') {
+        h += '<div class="cmp-why">※ 此人以「' + esc(r['配對依據']) + '」配對，請確認是否為同一人</div>';
+      }
+      h += '</div>';
+    }
+
+    if (r['狀態'] === 'pdf_only' || r['狀態'] === 'af_only') {
+      const t = r['狀態'] === 'pdf_only' ? '薪資清冊有，AF 查無此人' : 'AF 有，薪資清冊查無此人';
+      h += '<div class="cmp-row only"><div class="cmp-head">'
+         + '<span class="cmp-name">' + esc(r['姓名']) + '</span>'
+         + '<span class="cmp-sub">' + esc(r['職稱'] || r['單位'] || '') + '</span>'
+         + '<span class="cmp-tag o">' + t + '</span></div></div>';
+    }
+  });
+
+  if (d.ambiguous && d.ambiguous.length) {
+    d.ambiguous.forEach(a => {
+      h += '<div class="cmp-row bad"><div class="cmp-head">'
+         + '<span class="cmp-name">' + esc(a['姓名']) + '</span>'
+         + '<span class="cmp-tag d">同名無法自動區辨</span></div>'
+         + '<div class="cmp-why">薪資清冊 ' + a.pdf.length + ' 筆、AF ' + a.af.length
+         + ' 筆，職稱、單位與金額均無法區分，請人工核對</div></div>';
+    });
+  }
+
+  if (okNames.length) {
+    h += '<details class="cmp-ok"><summary>其餘 ' + okNames.length
+       + ' 人四個項目全部相符（點擊展開）</summary>'
+       + '<div class="names">' + okNames.map(esc).join('、') + '</div></details>';
+  }
+
+  document.getElementById('cmp-result').innerHTML = h;
+}
+
+function card(lbl, val, color) {
+  return '<div class="cmp-card"><div class="lbl">' + lbl + '</div>'
+       + '<div class="val" style="color:' + color + '">' + val + '</div></div>';
 }
 </script>
 </body>
