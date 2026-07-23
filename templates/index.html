@@ -85,8 +85,9 @@ tbody td{padding:6px 12px;border:1px solid #d5dae2;text-align:center;color:#222}
 tbody td.name-col{text-align:left;font-weight:600}
 .tbl-note{font-size:11px;color:#888;margin-top:6px}
 .footer{border-top:1px solid #ccc;padding:8px 24px;font-size:11px;color:#888;text-align:center;flex-shrink:0}
-.counter{display:flex;justify-content:center;gap:22px;flex-wrap:wrap;margin-bottom:5px;font-size:11px;color:#777}
-.counter b{color:#1a3a5c;font-size:13px;font-weight:700;margin-left:3px;font-variant-numeric:tabular-nums}
+.counter{display:flex;justify-content:flex-end;gap:14px;flex-wrap:wrap;margin-bottom:3px;font-size:11px;color:#777}
+.counter span{background:#eef3f9;border:1px solid #d5e0ec;padding:1px 8px;white-space:nowrap}
+.counter b{color:#1a3a5c;font-size:12px;font-weight:700;margin-left:4px;font-variant-numeric:tabular-nums}
 .template-link{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#1a3a5c;text-decoration:none;border:1px solid #1a3a5c;padding:3px 10px}
 .template-link:hover{background:#eef3f9}
 .dl-block{display:flex;align-items:flex-start;gap:16px;padding:14px 0;border-bottom:1px solid #e8ecf2}
@@ -143,7 +144,8 @@ tbody td.name-col{text-align:left;font-weight:600}
   .upload-row{grid-template-columns:1fr}
   .header{padding:10px 16px}
   .container{padding:16px}
-  .header-right{display:none}
+  .header-right{font-size:0}
+  .header-right .counter{font-size:10px;gap:6px;justify-content:flex-end;margin:0}
 }
 </style>
 </head>
@@ -157,7 +159,14 @@ tbody td.name-col{text-align:left;font-weight:600}
       <div class="header-sub">依薪資清冊序號自動重新排列 AF 資料欄位</div>
     </div>
   </div>
-  <div class="header-right">系統版本：v1.2<br>115 年度適用</div>
+  <div class="header-right">
+    <div class="counter">
+      <span>累計使用<b id="c-visits">—</b></span>
+      <span>排序<b id="c-sorts">—</b></span>
+      <span>比對<b id="c-compares">—</b></span>
+    </div>
+    系統版本：v1.2　│　115 年度適用
+  </div>
 </div>
 
 <div class="container">
@@ -335,14 +344,7 @@ tbody td.name-col{text-align:left;font-weight:600}
 
 </div>
 
-<div class="footer">
-  <div class="counter">
-    <span>累計使用<b id="c-visits">—</b></span>
-    <span>排序次數<b id="c-sorts">—</b></span>
-    <span>比對次數<b id="c-compares">—</b></span>
-  </div>
-  本系統僅供內部作業使用，請勿將資料外傳。
-</div>
+<div class="footer">本系統僅供內部作業使用，請勿將資料外傳。</div>
 
 <script>
 const files = {roster: null, af: null, pdf: null};
