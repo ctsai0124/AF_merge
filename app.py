@@ -724,7 +724,13 @@ def ocr_status(job_id):
         ex = load_exclusions(skey)
         good, need = paycheck.from_ocr(people, af_records)
         af_names_set = {a['姓名'] for a in af_records}
-        merge_title_stats(paycheck.title_observations(good + need, af_names_set))
+        stats = merge_title_stats(paycheck.title_observations(good + need, af_names_set))
+        learned, _ = paycheck.learned_suggestions(stats)
+        if learned:
+            auto = sorted({x['職稱'] for x in learned} | set(ex['titles']))
+            if auto != sorted(ex['titles']):
+                save_exclusions(skey, auto, ex['names'])
+                ex = load_exclusions(skey)
 
         ud = ex.get('use_default', True)
         paycheck.mark_exclusions(good, ex['titles'], ex['names'], ud)

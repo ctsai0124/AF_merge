@@ -47,7 +47,7 @@ def load_af(file_bytes, filename):
         if not pid:
             continue
         d = recs.setdefault(pid, {
-            '身分證': pid, '姓名': str(r['姓名']).strip(), '單位': '',
+            '身分證': pid.upper(), '姓名': str(r['姓名']).strip(), '單位': '',
             '薪俸': 0, '專業加給': 0, '主管加給': 0, '導師特教': 0, '列數': 0,
         })
         d['列數'] += 1
@@ -267,6 +267,7 @@ def match(pdf_people, af_records):
     af_by_name = {}
     for a in af_records:
         af_by_name.setdefault(a['姓名'], []).append(a)
+    af_by_id = {(a.get('身分證') or '').upper(): a for a in af_records}
 
     pairs, pdf_only, ambiguous = [], [], []
     used = set()
@@ -275,7 +276,18 @@ def match(pdf_people, af_records):
         used.add(a['身分證'])
         pairs.append((p, a, why))
 
-    # 先處理姓名唯一者
+    # 身分證字號最可靠，先行配對
+    remaining = []
+    for p in pdf_people:
+        pid = (p.get('身分證') or '').strip().upper()
+        a = af_by_id.get(pid)
+        if pid and a and a['身分證'] not in used:
+            take(p, a, '身分證字號')
+        else:
+            remaining.append(p)
+    pdf_people = remaining
+
+    # 再處理姓名唯一者
     pending = []
     for p in pdf_people:
         cands = [a for a in af_by_name.get(p['姓名'], []) if a['身分證'] not in used]
@@ -407,6 +419,23 @@ DEFAULT_EXCLUDE_TITLES = [
 ]
 
 
+# 明確的正式編制職稱：即使某月未出現在 AF，也絕不自動收合。
+# 理由：正式人員不在 AF，代表 AF 可能漏建，這正是稽核要抓的問題，
+#       若被學習成「非正式」而收合，錯誤將永遠無法被發現。
+NEVER_EXCLUDE_TITLES = [
+    '校長', '主任', '組長', '教師', '導師', '科任', '幹事', '書記',
+    '護理師', '校護', '工友', '技工', '駕駛', '教練', '職員', '管理員',
+]
+
+
+def is_formal_title(title):
+    """判斷是否為明確的正式編制職稱（僅看「兼」之前的主要職務）"""
+    head = title_head(title)
+    if any(k in head for k in DEFAULT_EXCLUDE_TITLES):
+        return False
+    return any(k in head for k in NEVER_EXCLUDE_TITLES)
+
+
 def title_head(title):
     """
     取職稱中「兼」之前的部分作為主要職務。
@@ -448,6 +477,11 @@ def mark_exclusions(people, ex_titles=None, ex_names=None, use_default=True):
         name = (p.get('姓名') or p.get('建議姓名')
                 or p.get('原始姓名') or '').strip()
 
+        # 正式編制職稱不因學習而收合；若使用者手動指定該人姓名則仍尊重
+        if is_formal_title(title) and name not in ex_names:
+            p['_次要'] = False
+            continue
+
         hit = next((t for t in ex_titles if t in head), None) \
             or next((t for t in defaults if t in head), None)
         if hit:
@@ -488,6 +522,9 @@ def learned_suggestions(stats, min_people=3, min_files=2):
     """
     suggest, wrong = [], []
     for t, d in (stats or {}).items():
+        # 正式編制職稱一律不納入學習，避免把「AF 漏建」誤學成「非正式人員」
+        if is_formal_title(t):
+            continue
         if t in DEFAULT_EXCLUDE_TITLES or any(k in title_head(t) for k in DEFAULT_EXCLUDE_TITLES):
             # 已由預設規則涵蓋；若竟然出現在 AF，代表預設規則可能誤判
             if d.get('in_af', 0) > 0:
@@ -532,17 +569,29 @@ def from_ocr(ocr_people, af_records):
     ocr_people：Mac 端 parse_tokens.py 的輸出
     回傳 (可直接比對的人員, 需使用者確認的列)
 
-    規則：
-    - 加總相符且姓名可對應 → 直接比對
-    - 其餘 → 保留 OCR 讀到的數值交由使用者核對，並標示可疑欄位
-    - 絕不以 AF 的金額回填，否則會掩蓋真正的差異
+    配對優先序：
+      1. 身分證字號（且檢查碼有效）— 最可靠，同名或姓名辨識錯誤皆不受影響
+      2. 姓名完全相符
+      3. 姓名字形相近（僅一字之差）
+    加總不符者一律交由使用者確認，不自行採用。
     """
     known = {a['姓名'] for a in af_records}
+    by_id = {(a.get('身分證') or '').strip().upper(): a
+             for a in af_records if (a.get('身分證') or '').strip()}
     good, need = [], []
 
     for p in ocr_people or []:
         raw = (p.get('姓名') or '').strip()
-        fixed, changed = fix_name(raw, known)
+        pid = (p.get('身分證') or '').strip().upper()
+        id_ok = bool(p.get('身分證有效')) and pid in by_id
+
+        if id_ok:
+            fixed, changed = by_id[pid]['姓名'], (by_id[pid]['姓名'] != raw)
+            name_ok = True
+        else:
+            fixed, changed = fix_name(raw, known)
+            name_ok = fixed in known
+
         vals = {
             '薪俸': _n(p.get('薪俸', 0)),
             '專業加給': _n(p.get('專業加給', 0)),
@@ -551,17 +600,20 @@ def from_ocr(ocr_people, af_records):
         }
         total = _n(p.get('應發金額', 0))
         s = sum(vals.values())
-        name_ok = fixed in known
         sum_ok = bool(total) and s == total
         conf = p.get('最低信心')
 
         if name_ok and sum_ok:
-            good.append({'姓名': fixed, '職稱': re.sub(r'^\d+\s*', '', p.get('職稱', '')).strip(),
+            good.append({'姓名': fixed,
+                         '職稱': re.sub(r'^\d+\s*', '', p.get('職稱', '')).strip(),
+                         '身分證': pid if id_ok else '',
                          '應發金額': total, '_ocr_name_fixed': changed, **vals})
             continue
 
         reasons = []
         if not name_ok:
+            if pid and not p.get('身分證有效'):
+                reasons.append(f'身分證「{pid}」檢查碼不符，可能辨識錯誤')
             reasons.append(f'姓名「{raw or "空白"}」無法對應 AF 名單')
         if not total:
             reasons.append('未讀到應發金額，無法驗算')
@@ -573,7 +625,7 @@ def from_ocr(ocr_people, af_records):
         need.append({
             '原始姓名': raw, '建議姓名': fixed if name_ok else '',
             '職稱': re.sub(r'^\d+\s*', '', p.get('職稱', '')).strip(),
-            '應發金額': total, '原因': reasons,
+            '身分證': pid, '應發金額': total, '原因': reasons,
             '姓名可疑': not name_ok, '金額可疑': not sum_ok,
             **vals,
         })
