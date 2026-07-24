@@ -635,34 +635,7 @@ function renderReview(d) {
 
 let exTitles = [], exNames = [];
 
-async function addLearned(school, n) {
-  const picked = [];
-  for (let k = 0; k < n; k++) {
-    const el = document.getElementById('lt' + k);
-    if (el && el.checked) picked.push(el.value);
-  }
-  if (!picked.length) { cmpMsg('warn', '請先勾選要排除的職稱'); return; }
-  try {
-    const cur = await (await fetch('/settings/exclusions?school=' + encodeURIComponent(school))).json();
-    const titles = [...new Set([...(cur.titles || []), ...picked])];
-    await fetch('/settings/exclusions', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({school, titles, names: cur.names || []})
-    });
-    cmpMsg('info', '已加入排除清單：' + picked.join('、') + '　請重新執行比對以套用。');
-  } catch (e) { cmpMsg('err', '設定儲存失敗'); }
-}
 
-async function toggleDefault(school) {
-  const on = document.getElementById('exDefault').checked;
-  try {
-    await fetch('/settings/exclusions', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({school, titles: [], names: [], use_default: on})
-    });
-    cmpMsg('info', '設定已更新，請重新執行比對以套用。');
-  } catch (e) { cmpMsg('err', '設定儲存失敗'); }
-}
 
 function dropRow(i) {
   const tr = document.getElementById('rv' + i), btn = document.getElementById('bx' + i);
@@ -853,52 +826,12 @@ function renderCompare(d) {
      + card('AF 有清冊無', s['AF有清冊無'], '#5a6a7a')
      + (s['待人工指定'] ? card('待人工指定', s['待人工指定'], '#a32d2d') : '')
      + (s['加總不符'] ? card('加總不符', s['加總不符'], '#8a5a11') : '')
+     + (s['其他人員'] ? card('其他人員', s['其他人員'], '#8794a3') : '')
      + '</div>';
 
-  if (d.excluded && d.excluded.length) {
-    const byReason = {};
-    d.excluded.forEach(x => {
-      (byReason[x['原因']] = byReason[x['原因']] || []).push(x['姓名']);
-    });
-    h += '<div class="ex-note"><b>已略過 ' + d.excluded.length + ' 人不納入稽核</b>';
-    for (const why in byReason) {
-      h += '<br>· ' + esc(why) + '：' + byReason[why].map(esc).join('、');
-    }
-    if (d.school_key) {
-      h += '<br><label style="font-size:11px;cursor:pointer;margin-top:4px;display:inline-block">'
-         + '<input type="checkbox" id="exDefault" '
-         + ((d.exclusions && d.exclusions.use_default !== false) ? 'checked' : '')
-         + ' onchange="toggleDefault(\'' + esc(d.school_key) + '\')"> '
-         + '自動排除非正式人員（代理、長代、教保員等）</label>';
-    }
-    h += '</div>';
-  }
-
-  if (d.learned && d.learned.length) {
-    h += '<div class="ex-note" style="background:#fffbe6;border-color:#d4aa00;color:#5a3e00">'
-       + '<b>系統觀察到以下職稱從未出現在 AF 資料中</b><br>';
-    d.learned.forEach((x, k) => {
-      h += '<label style="display:inline-block;margin:4px 14px 0 0;cursor:pointer">'
-         + '<input type="checkbox" id="lt' + k + '" value="' + esc(x['職稱']) + '"> '
-         + esc(x['職稱']) + ' <span style="font-size:11px;color:#7a5200">（累計 '
-         + x['總人次'] + ' 人次／' + x['檔案數'] + ' 份檔案）</span></label>';
-    });
-    h += '<br><button class="btn-cmp" style="margin-top:8px;padding:5px 16px;font-size:12px" '
-       + 'onclick="addLearned(\'' + esc(d.school_key || '') + '\',' + d.learned.length + ')">'
-       + '加入排除清單</button>'
-       + '<span style="font-size:11px;margin-left:8px">加入後這所學校往後都會自動略過。</span></div>';
-  }
-
-  if (d.wrong_exclusions && d.wrong_exclusions.length) {
-    h += '<div class="ex-note" style="background:#fdecec;border-color:#cc5555;color:#a32d2d">'
-       + '<b>⚠ 下列職稱雖被歸類為非正式人員，卻曾出現在 AF 中</b><br>'
-       + d.wrong_exclusions.map(x => esc(x['職稱']) + '（' + x['出現在AF'] + '/'
-           + x['總人次'] + ' 人次在 AF）').join('、')
-       + '<br><span style="font-size:11px">可能是預設規則誤判，建議關閉自動排除或改用個別排除。</span></div>';
-  }
-
-  const okNames = [];
+  const okNames = [], subRows = [];
   d.results.forEach(r => {
+    if (r['次要']) { subRows.push(r); return; }
     if (r['狀態'] === 'ok') { okNames.push(r['姓名']); return; }
 
     if (r['狀態'] === 'diff') {
@@ -945,6 +878,39 @@ function renderCompare(d) {
     h += '<details class="cmp-ok"><summary>其餘 ' + okNames.length
        + ' 人四個項目全部相符（點擊展開）</summary>'
        + '<div class="names">' + okNames.map(esc).join('、') + '</div></details>';
+  }
+
+  if (subRows.length) {
+    const bad = subRows.filter(r => r['狀態'] === 'diff').length;
+    h += '<details class="cmp-ok" style="margin-top:8px"><summary>另有 '
+       + subRows.length + ' 人未列入本次稽核'
+       + (bad ? '（其中 ' + bad + ' 人金額不符）' : '')
+       + '（點擊展開）</summary><div style="margin-top:9px">';
+    subRows.forEach(r => {
+      const tag = r['狀態'] === 'diff' ? 'bad' : (r['狀態'] === 'ok' ? '' : 'only');
+      h += '<div class="cmp-row ' + tag + '" style="margin-bottom:6px"><div class="cmp-head">'
+         + '<span class="cmp-name">' + esc(r['姓名']) + '</span>'
+         + '<span class="cmp-sub">' + esc(r['職稱'] || r['單位'] || '') + '</span>';
+      if (r['狀態'] === 'diff') {
+        h += '<span class="cmp-tag d">' + r['差異'].length + ' 項不符</span></div>'
+           + '<table class="cmp-tbl"><tbody>';
+        r['差異'].forEach(x => {
+          h += '<tr class="x"><td class="f">' + esc(x['欄位']) + '</td>'
+             + '<td>' + nf(x['清冊']) + '</td><td>' + nf(x['AF']) + '</td>'
+             + '<td>' + (x['差額'] > 0 ? '+' : '') + nf(x['差額']) + '</td></tr>';
+        });
+        h += '</tbody></table>';
+      } else if (r['狀態'] === 'ok') {
+        h += '<span class="cmp-tag" style="background:#f2f9f2;color:#1a4d2a;'
+           + 'border:1px solid #b7d9c0">相符</span></div>';
+      } else {
+        h += '<span class="cmp-tag o">'
+           + (r['狀態'] === 'pdf_only' ? '薪資清冊有，AF 查無' : 'AF 有，清冊查無')
+           + '</span></div>';
+      }
+      h += '</div>';
+    });
+    h += '</div></details>';
   }
 
   document.getElementById('cmp-result').innerHTML = h;
