@@ -72,6 +72,94 @@ def ocr_enabled():
     return bool(_ocr_key())
 
 
+# ── 排除設定（依學校記憶）────────────────────────────────
+_ex_lock = threading.Lock()
+
+
+def _ex_file():
+    base = os.environ.get('DATA_DIR', '').strip() or app.root_path
+    try:
+        os.makedirs(base, exist_ok=True)
+    except Exception:
+        base = tempfile.gettempdir()
+    return os.path.join(base, 'exclusions.json')
+
+
+def load_exclusions(school=''):
+    try:
+        with open(_ex_file(), encoding='utf-8') as f:
+            d = json.load(f)
+    except Exception:
+        d = {}
+    e = d.get(school or '_default', {})
+    return {'titles': e.get('titles', []), 'names': e.get('names', []),
+            'use_default': e.get('use_default', True)}
+
+
+def save_exclusions(school, titles, names, use_default=None):
+    with _ex_lock:
+        try:
+            with open(_ex_file(), encoding='utf-8') as f:
+                d = json.load(f)
+        except Exception:
+            d = {}
+        prev = d.get(school or '_default', {})
+        d[school or '_default'] = {
+            'titles': sorted({t.strip() for t in titles if t.strip()}),
+            'names': sorted({n.strip() for n in names if n.strip()}),
+            'use_default': prev.get('use_default', True) if use_default is None else bool(use_default),
+        }
+        try:
+            with open(_ex_file(), 'w', encoding='utf-8') as f:
+                json.dump(d, f, ensure_ascii=False)
+        except Exception as e:
+            app.logger.warning(f'排除設定寫入失敗：{e}')
+        return d[school or '_default']
+
+
+def school_key(af_name):
+    sn1, _ = parse_af_filename(af_name or '')
+    return sn1 or (af_name or '_default')
+
+
+# ── 職稱觀察統計（跨檔案累積，用於建議排除）────────────────
+_stats_lock = threading.Lock()
+
+
+def _stats_file():
+    base = os.environ.get('DATA_DIR', '').strip() or app.root_path
+    try:
+        os.makedirs(base, exist_ok=True)
+    except Exception:
+        base = tempfile.gettempdir()
+    return os.path.join(base, 'title_stats.json')
+
+
+def load_title_stats():
+    try:
+        with open(_stats_file(), encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def merge_title_stats(obs):
+    """把本次觀察併入累積統計"""
+    with _stats_lock:
+        d = load_title_stats()
+        for t, v in (obs or {}).items():
+            e = d.setdefault(t, {'total': 0, 'in_af': 0, 'files': 0})
+            e['total'] += v['total']
+            e['in_af'] += v['in_af']
+            e['files'] += 1
+        try:
+            with open(_stats_file(), 'w', encoding='utf-8') as f:
+                json.dump(d, f, ensure_ascii=False)
+        except Exception as e:
+            app.logger.warning(f'職稱統計寫入失敗：{e}')
+        return d
+
+
 # ── 使用次數計數器 ────────────────────────────────────────
 _counter_lock = threading.Lock()
 
@@ -466,6 +554,16 @@ def compare_pdf():
                     '請改用薪資系統「直接匯出」的原始 PDF。'
                 ]}), 400
 
+        skey = school_key(af_name)
+        ex = load_exclusions(skey)
+        af_names = {a['姓名'] for a in af_records}
+        obs = paycheck.title_observations(pdf_people, af_names)
+        stats = merge_title_stats(obs)
+        learned, wrong = paycheck.learned_suggestions(stats)
+
+        pdf_people, dropped = paycheck.apply_exclusions(
+            pdf_people, ex['titles'], ex['names'], ex.get('use_default', True))
+
         paycheck.annotate_arith(pdf_people)
         bad_arith = [p['姓名'] for p in pdf_people if p.get('_arith_ok') is False]
         if bad_arith:
@@ -480,10 +578,37 @@ def compare_pdf():
         out['af_count'] = len(af_records)
         out['pdf_count'] = len(pdf_people)
         out['warnings'] = af_warns
+        out['excluded'] = dropped
+        out['school_key'] = skey
+        out['exclusions'] = ex
+        out['learned'] = learned
+        out['wrong_exclusions'] = wrong
+        out['counts'] = bump_counter('compares')
         return jsonify(out)
 
     except Exception as e:
         return jsonify({'error': '比對錯誤：' + str(e)}), 500
+
+
+@app.route('/settings/title-stats')
+def settings_title_stats():
+    """檢視累積的職稱觀察統計"""
+    stats = load_title_stats()
+    learned, wrong = paycheck.learned_suggestions(stats)
+    rows = sorted(({'職稱': t, **v} for t, v in stats.items()),
+                  key=lambda x: -x['total'])
+    return jsonify({'stats': rows, 'learned': learned, 'wrong': wrong})
+
+
+@app.route('/settings/exclusions', methods=['GET', 'POST'])
+def settings_exclusions():
+    """讀取／儲存某校的排除設定"""
+    if request.method == 'GET':
+        return jsonify(load_exclusions(request.args.get('school', '')))
+    d = request.get_json(silent=True) or {}
+    return jsonify(save_exclusions(d.get('school', ''),
+                                   d.get('titles') or [], d.get('names') or [],
+                                   d.get('use_default')))
 
 
 @app.route('/ocr/start/<job_id>', methods=['POST'])
@@ -512,6 +637,12 @@ def ocr_submit_fixed():
         good, af_bytes, af_name = j.get('good', []), j['af'], j['af_name']
     try:
         af_records, af_warns = paycheck.load_af(af_bytes, af_name)
+        skey = school_key(af_name)
+        if d.get('remember_titles') or d.get('remember_names'):
+            cur = load_exclusions(skey)
+            save_exclusions(skey,
+                            set(cur['titles']) | set(d.get('remember_titles') or []),
+                            set(cur['names']) | set(d.get('remember_names') or []))
         out = paycheck.compare_with_fixed(good, d.get('rows') or [], af_records)
         out.update({'status': 'done', 'success': True, 'mode': 'ocr',
                     'layout': '掃描圖檔（文字辨識＋人工確認）',
@@ -588,7 +719,16 @@ def ocr_status(job_id):
 
     try:
         af_records, af_warns = paycheck.load_af(af_bytes, af_name)
+        skey = school_key(af_name)
+        ex = load_exclusions(skey)
         good, need = paycheck.from_ocr(people, af_records)
+        af_names_set = {a['姓名'] for a in af_records}
+        merge_title_stats(paycheck.title_observations(good + need, af_names_set))
+
+        ud = ex.get('use_default', True)
+        good, dropped_g = paycheck.apply_exclusions(good, ex['titles'], ex['names'], ud)
+        need, dropped_n = paycheck.apply_exclusions(need, ex['titles'], ex['names'], ud)
+        dropped = dropped_g + dropped_n
 
         if need:
             with _ocr_lock:
@@ -597,7 +737,8 @@ def ocr_status(job_id):
                     _ocr_jobs[job_id]['status'] = 'need_review'
             return jsonify({
                 'status': 'need_review', 'success': True, 'job_id': job_id,
-                'auto_ok': len(good), 'need': need,
+                'auto_ok': len(good), 'need': need, 'excluded': dropped,
+                'school_key': skey, 'exclusions': ex,
                 'af_names': sorted({a['姓名'] for a in af_records}),
                 'warnings': af_warns,
             })
@@ -606,6 +747,7 @@ def ocr_status(job_id):
         out.update({'status': 'done', 'success': True, 'mode': 'ocr',
                     'layout': '掃描圖檔（文字辨識）', 'af_count': len(af_records),
                     'pdf_count': len(good), 'warnings': af_warns,
+                    'excluded': dropped, 'school_key': skey, 'exclusions': ex,
                     'counts': bump_counter('compares')})
         with _ocr_lock:
             _ocr_jobs.pop(job_id, None)

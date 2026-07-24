@@ -389,6 +389,113 @@ def compare(pdf_people, af_records):
     return {'summary': summary, 'results': results, 'ambiguous': ambiguous}
 
 
+# ── 5b. 排除規則 ─────────────────────────────────────
+
+# 預設排除的職稱關鍵字（非正式人員，通常不在 AF 校對清冊內）
+DEFAULT_EXCLUDE_TITLES = [
+    '代理', '代課', '長代',            # 代理教師、長期代理、侍親長代、育嬰長代
+    '教保員', '助理教保',              # 幼兒園教保人員
+    '約僱', '約聘', '臨時', '工讀',     # 臨時性人力
+    '替代役', '實習', '志工',
+]
+
+
+def title_head(title):
+    """
+    取職稱中「兼」之前的部分作為主要職務。
+    「教師兼代理主任」→「教師」（是正式教師，不可因含「代理」被排除）
+    「代理教師」→「代理教師」
+    """
+    t = (title or '').strip()
+    return t.split('兼')[0] if '兼' in t else t
+
+
+def suggest_exclude_titles(people):
+    """從人員清單中挑出符合預設規則的職稱，供介面建議勾選"""
+    found = set()
+    for p in people:
+        head = title_head(p.get('職稱', ''))
+        for kw in DEFAULT_EXCLUDE_TITLES:
+            if kw in head:
+                t = (p.get('職稱') or '').strip()
+                if t:
+                    found.add(t)
+    return sorted(found)
+
+
+def apply_exclusions(people, ex_titles=None, ex_names=None, use_default=True):
+    """
+    依職稱關鍵字或姓名排除不需稽核的人員。
+
+    比對只看職稱中「兼」之前的部分，避免「教師兼代理主任」這類
+    正式人員被誤判為代理人員。
+
+    回傳 (保留的人員, 被排除的說明清單)
+    """
+    ex_titles = [t.strip() for t in (ex_titles or []) if t.strip()]
+    ex_names = set(n.strip() for n in (ex_names or []) if n.strip())
+    defaults = DEFAULT_EXCLUDE_TITLES if use_default else []
+
+    keep, dropped = [], []
+    for p in people:
+        title = (p.get('職稱') or '').strip()
+        head = title_head(title)
+        name = (p.get('姓名') or '').strip()
+
+        hit = next((t for t in ex_titles if t in head), None)
+        if hit:
+            dropped.append({'姓名': name, '職稱': title, '原因': f'職稱含「{hit}」'})
+            continue
+        hit = next((t for t in defaults if t in head), None)
+        if hit:
+            dropped.append({'姓名': name, '職稱': title,
+                            '原因': f'非正式人員（職稱含「{hit}」）', '預設': True})
+            continue
+        if name in ex_names:
+            dropped.append({'姓名': name, '職稱': title, '原因': '個別排除'})
+            continue
+        keep.append(p)
+    return keep, dropped
+
+
+def title_observations(people, af_names):
+    """
+    統計本次清冊中，各職稱的人有多少比例出現在 AF。
+    回傳 {職稱: {'total': n, 'in_af': m}}
+    供跨檔案累積，用來判斷哪些職稱屬於非正式人員。
+    """
+    obs = {}
+    for p in people:
+        t = (p.get('職稱') or '').strip()
+        if not t:
+            continue
+        d = obs.setdefault(t, {'total': 0, 'in_af': 0})
+        d['total'] += 1
+        if (p.get('姓名') or '').strip() in af_names:
+            d['in_af'] += 1
+    return obs
+
+
+def learned_suggestions(stats, min_people=3, min_files=2):
+    """
+    從累積統計中挑出「疑似非正式人員」的職稱。
+    條件：出現過一定人次、來自多份檔案、且從未在 AF 出現過。
+    回傳 (建議排除清單, 疑似誤排除清單)
+    """
+    suggest, wrong = [], []
+    for t, d in (stats or {}).items():
+        if t in DEFAULT_EXCLUDE_TITLES or any(k in title_head(t) for k in DEFAULT_EXCLUDE_TITLES):
+            # 已由預設規則涵蓋；若竟然出現在 AF，代表預設規則可能誤判
+            if d.get('in_af', 0) > 0:
+                wrong.append({'職稱': t, '出現在AF': d['in_af'], '總人次': d['total']})
+            continue
+        if (d.get('in_af', 0) == 0 and d.get('total', 0) >= min_people
+                and d.get('files', 0) >= min_files):
+            suggest.append({'職稱': t, '總人次': d['total'], '檔案數': d['files']})
+    suggest.sort(key=lambda x: -x['總人次'])
+    return suggest, wrong
+
+
 # ── 6. 算術自檢 ───────────────────────────────────────
 
 def arith_check(p):
