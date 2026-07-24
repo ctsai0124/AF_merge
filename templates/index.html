@@ -128,6 +128,25 @@ tbody td.name-col{text-align:left;font-weight:600}
 .cmp-tbl td.f{text-align:left}
 .cmp-tbl tr.x td{background:#fff2f2;color:#a32d2d;font-weight:700}
 .cmp-why{font-size:11px;color:#777;margin-top:7px}
+.rev-tbl{width:100%;border-collapse:collapse;font-size:12px;margin:10px 0}
+.rev-tbl th{background:#7a5200;color:#fff;padding:6px 8px;font-size:11px;text-align:center;position:static}
+.rev-tbl td{border:1px solid #ddd;padding:4px 6px;text-align:center}
+.rev-tbl td.nm{text-align:left;font-weight:600;background:#fafafa}
+.rev-tbl input{width:82px;padding:4px 6px;border:1px solid #cfd6de;font-size:12px;text-align:right;font-family:inherit}
+.rev-tbl input.name{width:96px;text-align:left}
+.rev-tbl input.sus{border:2px solid #cc5555;background:#fff6f6}
+.rev-tbl input:focus{outline:none;border-color:#1a3a5c;background:#fffdf0}
+.rev-tbl tr.ok td{background:#f2f9f2}
+.rev-tbl tr.ok input{border-color:#8bc49a}
+.rev-why{font-size:11px;color:#a32d2d;text-align:left;line-height:1.7}
+.rev-chk{font-weight:700}
+.alert-panel{border:1px solid #d4aa00;border-left:5px solid #d4aa00;background:#fffbe6;padding:14px 18px;margin-top:4px}
+.alert-panel h4{font-size:14px;color:#7a5200;margin-bottom:8px;display:flex;align-items:center;gap:7px}
+.alert-panel .why{font-size:12px;color:#5a3e00;line-height:1.8;margin-bottom:10px;
+  background:#fff;border:1px solid #ecdca8;padding:8px 12px}
+.alert-panel ol{margin:0;padding-left:20px;font-size:12px;color:#5a3e00;line-height:1.9}
+.alert-panel li{margin-bottom:3px}
+.alert-panel .tag{background:#d4aa00;color:#fff;font-size:11px;font-weight:700;padding:2px 9px;margin-left:auto}
 .cmp-ok{border:1px solid #d5dae2;background:#f7f9fb;padding:10px 14px;font-size:12px;color:#444;margin-top:4px}
 .cmp-ok summary{cursor:pointer;font-weight:700;color:#1a4d2a}
 .cmp-ok .names{margin-top:8px;line-height:1.9;color:#555}
@@ -477,6 +496,163 @@ async function printAll() {
   window.open('/print-all', '_blank');
 }
 
+/* ── 掃描檔：等待 Mac 端文字辨識 ── */
+async function pollOCR(jobId, notice) {
+  document.getElementById('compare-section').style.display = 'block';
+  const box = document.getElementById('cmp-result');
+  const t0 = Date.now();
+
+  const tick = () => {
+    const s = Math.floor((Date.now() - t0) / 1000);
+    box.innerHTML = '<div class="alert-panel" style="border-color:#1a3a5c;'
+      + 'border-left-color:#1a3a5c;background:#eef3f9">'
+      + '<h4 style="color:#1a3a5c"><span class="spin" style="display:inline-block"></span>'
+      + '正在辨識掃描檔…<span class="tag" style="background:#1a3a5c">' + s + ' 秒</span></h4>'
+      + '<div class="why" style="border-color:#c7d8ea;color:#1a3a5c">'
+      + esc(notice || '') + '<br>辨識完成後會自動進行比對，請勿關閉此頁。</div></div>';
+  };
+  tick();
+  const timer = setInterval(tick, 1000);
+
+  const stop = () => clearInterval(timer);
+
+  while (true) {
+    await new Promise(r => setTimeout(r, 3000));
+    let d;
+    try {
+      const res = await fetch('/ocr/status/' + jobId);
+      d = await res.json();
+    } catch (e) { continue; }
+
+    if (d.status === 'pending' || d.status === 'processing'
+        || d.status === 'need_review_pending') continue;
+
+    stop();
+    if (d.status === 'need_review') { renderReview(d); return; }
+    if (d.status === 'done') {
+      renderCompare(d);
+      setCounts(d.counts);
+      return;
+    }
+    box.innerHTML = '';
+    showAlert({
+      code: 'scanned',
+      title: d.status === 'timeout' ? '辨識服務目前無回應' : '辨識失敗',
+      why: d.error || '無法完成文字辨識。',
+      how: ['請改用薪資系統「直接匯出」的 PDF。',
+            '若此情形持續發生，請通知系統管理者檢查辨識服務是否正常運作。']
+    });
+    return;
+  }
+}
+
+/* ── OCR 結果人工確認 ── */
+const REV_F = ['薪俸','專業加給','主管加給','導師特教'];
+let revRows = [], revJob = null;
+
+function renderReview(d) {
+  revRows = d.need; revJob = d.job_id;
+  let h = '<div class="alert-panel"><h4><span style="font-size:17px">⚠</span>'
+    + '有 ' + d.need.length + ' 筆需要您確認'
+    + '<span class="tag">' + d.auto_ok + ' 筆已自動通過</span></h4>'
+    + '<div class="why">下列資料的文字辨識結果不夠可靠。'
+    + '欄位已填入辨識到的數值，<b>請對照紙本清冊確認</b>，紅框處特別需要留意。<br>'
+    + '四項相加等於應發金額時，該列會轉為綠色。</div>';
+
+  h += '<table class="rev-tbl"><thead><tr><th>姓名</th><th>職稱</th>'
+     + '<th>薪俸</th><th>專業加給</th><th>職務加給</th><th>導師＋特教</th>'
+     + '<th>應發金額</th><th>驗算</th></tr></thead><tbody>';
+
+  d.need.forEach((r, i) => {
+    const ns = r['姓名可疑'] ? ' sus' : '';
+    const ms = r['金額可疑'] ? ' sus' : '';
+    h += '<tr id="rv' + i + '"><td class="nm">'
+       + '<input class="name' + ns + '" list="afnames" data-i="' + i + '" data-f="姓名" value="'
+       + esc(r['建議姓名'] || r['原始姓名'] || '') + '" oninput="onRev(this)"></td>'
+       + '<td style="font-size:11px;color:#666">' + esc(r['職稱'] || '') + '</td>';
+    REV_F.forEach(f => {
+      h += '<td><input data-i="' + i + '" data-f="' + f + '" class="' + ms
+         + '" value="' + r[f] + '" oninput="onRev(this)"></td>';
+    });
+    h += '<td><input data-i="' + i + '" data-f="應發金額" class="' + ms
+       + '" value="' + r['應發金額'] + '" oninput="onRev(this)"></td>'
+       + '<td class="rev-chk" id="rc' + i + '">—</td></tr>'
+       + '<tr><td colspan="8" class="rev-why">↳ '
+       + (r['原因'] || []).map(esc).join('；') + '</td></tr>';
+  });
+  h += '</tbody></table>';
+  h += '<datalist id="afnames">'
+     + (d.af_names || []).map(n => '<option value="' + esc(n) + '">').join('')
+     + '</datalist>';
+  h += '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+     + '<button class="btn-cmp" onclick="submitReview()">確認並比對</button>'
+     + '<span style="font-size:11px;color:#7a5200">'
+     + '無法確認的列可清空姓名，該列將不納入比對。</span></div></div>';
+
+  document.getElementById('cmp-result').innerHTML = h;
+  document.getElementById('compare-section').style.display = 'block';
+  d.need.forEach((_, i) => revCheck(i));
+}
+
+function onRev(el) {
+  const i = +el.dataset.i, f = el.dataset.f;
+  revRows[i][f] = (f === '姓名') ? el.value.trim()
+                                 : el.value.replace(/[^0-9]/g, '');
+  if (f !== '姓名' && el.value !== revRows[i][f]) el.value = revRows[i][f];
+  revCheck(i);
+}
+
+function revCheck(i) {
+  const r = revRows[i], cell = document.getElementById('rc' + i),
+        tr = document.getElementById('rv' + i);
+  if (!cell) return;
+  const total = parseInt(r['應發金額'] || 0) || 0;
+  let s = 0; REV_F.forEach(f => s += parseInt(r[f] || 0) || 0);
+  tr.classList.remove('ok');
+  if (!total) { cell.textContent = '—'; cell.style.color = '#999'; return; }
+  if (s === total) {
+    cell.textContent = '✔'; cell.style.color = '#1a4d2a'; tr.classList.add('ok');
+  } else {
+    cell.textContent = (total - s > 0 ? '+' : '') + (total - s).toLocaleString('en-US');
+    cell.style.color = '#a32d2d';
+  }
+}
+
+async function submitReview() {
+  const rows = revRows.filter(r => (r['姓名'] || r['建議姓名'] || '').trim())
+                      .map(r => ({...r, 姓名: (r['姓名'] || r['建議姓名'] || '').trim()}));
+  document.getElementById('cmp-loader').style.display = 'flex';
+  try {
+    const res = await fetch('/ocr/submit-fixed', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({job_id: revJob, rows})
+    });
+    const d = await res.json();
+    if (!res.ok || !d.success) { cmpMsg('err', esc(d.error || '比對失敗')); return; }
+    renderCompare(d); setCounts(d.counts);
+  } catch (e) {
+    cmpMsg('err', '連線失敗：' + esc(e.message));
+  } finally {
+    document.getElementById('cmp-loader').style.display = 'none';
+  }
+}
+
+/* ── 無法解析時的警語面板 ── */
+function showAlert(d) {
+  const tag = d.code === 'scanned' ? '掃描圖檔' : '表格結構遺失';
+  let h = '<div class="alert-panel">'
+        + '<h4><span style="font-size:17px">⚠</span>' + esc(d.title || '無法比對')
+        + '<span class="tag">' + tag + '</span></h4>'
+        + '<div class="why">' + esc(d.why || '') + '</div>'
+        + '<div style="font-size:12px;font-weight:700;color:#7a5200;margin-bottom:5px">'
+        + '該怎麼處理</div><ol>';
+  (d.how || []).forEach(x => { h += '<li>' + esc(x) + '</li>'; });
+  h += '</ol></div>';
+  document.getElementById('cmp-msg').innerHTML = '';
+  document.getElementById('cmp-result').innerHTML = h;
+  document.getElementById('compare-section').style.display = 'block';
+}
+
 /* ── 使用次數計數器 ── */
 function setCounts(c) {
   if (!c) return;
@@ -524,9 +700,14 @@ async function doCompare() {
     const res = await fetch('/compare-pdf', {method:'POST', body:fd});
     const data = await res.json();
     if (!res.ok || !data.success) {
-      cmpMsg('err', esc(data.error || '比對失敗'));
+      if (data.code === 'scanned' || data.code === 'no_table') {
+        showAlert(data);
+      } else {
+        cmpMsg('err', esc(data.error || '比對失敗'));
+      }
       return;
     }
+    if (data.mode === 'ocr_pending') { pollOCR(data.job_id, data.notice); return; }
     renderCompare(data);
     setCounts(data.counts);
     document.getElementById('compare-section').style.display = 'block';
