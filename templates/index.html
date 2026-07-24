@@ -125,6 +125,10 @@ tbody td.name-col{text-align:left;font-weight:600}
 .cmp-tag{margin-left:auto;font-size:11px;padding:2px 9px;font-weight:700}
 .cmp-tag.d{background:#fff2f2;color:#a32d2d;border:1px solid #e0aaaa}
 .cmp-tag.o{background:#fffbe6;color:#8a5a11;border:1px solid #ddc47a}
+.inc-btn{font-size:11px;padding:2px 9px;border:1px solid #b89b5e;background:#fdf8ec;
+  color:#7a5c1e;border-radius:3px;cursor:pointer;white-space:nowrap}
+.inc-btn:hover{background:#f5ead2}
+.inc-note{font-size:11px;color:#7a5c1e;white-space:nowrap}
 .cmp-tbl{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px;white-space:normal}
 .cmp-tbl th{background:#eef2f7;color:#555;font-weight:700;padding:5px 8px;border:1px solid #d5dae2;text-align:center;font-size:11px;position:static}
 .cmp-tbl td{padding:5px 8px;border:1px solid #d5dae2;text-align:center;color:#222}
@@ -805,7 +809,18 @@ async function doCompare() {
 }
 
 function renderCompare(d) {
+  window._cmp = d;   // 保存資料，供「納入本次稽核／移回」重新渲染
   const s = d.summary;
+  // 依目前納入狀態即時重算摘要（納入或移回後，上方數字才會跟著變）
+  const _main = d.results.filter(r => !r['次要']);
+  const _sub  = d.results.filter(r =>  r['次要']);
+  s['一致']       = _main.filter(r => r['狀態'] === 'ok').length;
+  s['有差異']     = _main.filter(r => r['狀態'] === 'diff').length;
+  s['清冊有AF無'] = _main.filter(r => r['狀態'] === 'pdf_only').length;
+  s['AF有清冊無'] = _main.filter(r => r['狀態'] === 'af_only').length;
+  s['其他人員']   = _sub.length;
+  s['其他人員有差異'] = _sub.filter(r =>
+      r['狀態'] === 'diff' || r['狀態'] === 'pdf_only').length;
   const bad = s['有差異'] + s['清冊有AF無'] + s['AF有清冊無'] + (s['待人工指定'] || 0);
   if (d.warnings && d.warnings.length) {
     document.getElementById('cmp-msg').innerHTML =
@@ -830,15 +845,26 @@ function renderCompare(d) {
      + '</div>';
 
   const okNames = [], subRows = [];
-  d.results.forEach(r => {
-    if (r['次要']) { subRows.push(r); return; }
-    if (r['狀態'] === 'ok') { okNames.push(r['姓名']); return; }
+  d.results.forEach((r, i) => {
+    if (r['次要']) { subRows.push({r: r, i: i}); return; }
+    if (r['狀態'] === 'ok' && !r['_納入']) { okNames.push(r['姓名']); return; }
+
+    if (r['狀態'] === 'ok') {   // 人工納入且金額相符者，逐列顯示以便檢視
+      h += '<div class="cmp-row"><div class="cmp-head">'
+         + '<span class="cmp-name">' + esc(r['姓名']) + '</span>'
+         + '<span class="cmp-sub">' + esc(r['職稱'] || r['單位'] || '') + '</span>'
+         + '<span class="cmp-tag" style="background:#f2f9f2;color:#1a4d2a;'
+         + 'border:1px solid #b7d9c0">相符</span>' + incBack(i)
+         + '</div></div>';
+      return;
+    }
 
     if (r['狀態'] === 'diff') {
       h += '<div class="cmp-row bad"><div class="cmp-head">'
          + '<span class="cmp-name">' + esc(r['姓名']) + '</span>'
          + '<span class="cmp-sub">' + esc(r['職稱'] || r['單位'] || '') + '</span>'
-         + '<span class="cmp-tag d">' + r['差異'].length + ' 項不符</span></div>'
+         + '<span class="cmp-tag d">' + r['差異'].length + ' 項不符</span>'
+         + (r['_納入'] ? incBack(i) : '') + '</div>'
          + '<table class="cmp-tbl"><thead><tr>'
          + '<th style="text-align:left">項目</th><th>薪資清冊</th><th>AF 資料</th><th>差額</th>'
          + '</tr></thead><tbody>';
@@ -860,7 +886,8 @@ function renderCompare(d) {
       h += '<div class="cmp-row only"><div class="cmp-head">'
          + '<span class="cmp-name">' + esc(r['姓名']) + '</span>'
          + '<span class="cmp-sub">' + esc(r['職稱'] || r['單位'] || '') + '</span>'
-         + '<span class="cmp-tag o">' + t + '</span></div></div>';
+         + '<span class="cmp-tag o">' + t + '</span>'
+         + (r['_納入'] ? incBack(i) : '') + '</div></div>';
     }
   });
 
@@ -886,13 +913,15 @@ function renderCompare(d) {
        + subRows.length + ' 人未列入本次稽核'
        + (bad ? '（其中 ' + bad + ' 人金額不符）' : '')
        + '（點擊展開）</summary><div style="margin-top:9px">';
-    subRows.forEach(r => {
+    subRows.forEach(x => {
+      const r = x.r, i = x.i;
       const tag = r['狀態'] === 'diff' ? 'bad' : (r['狀態'] === 'ok' ? '' : 'only');
       h += '<div class="cmp-row ' + tag + '" style="margin-bottom:6px"><div class="cmp-head">'
          + '<span class="cmp-name">' + esc(r['姓名']) + '</span>'
          + '<span class="cmp-sub">' + esc(r['職稱'] || r['單位'] || '') + '</span>';
       if (r['狀態'] === 'diff') {
-        h += '<span class="cmp-tag d">' + r['差異'].length + ' 項不符</span></div>'
+        h += '<span class="cmp-tag d">' + r['差異'].length + ' 項不符</span>'
+           + incBtn(i) + '</div>'
            + '<table class="cmp-tbl"><tbody>';
         r['差異'].forEach(x => {
           h += '<tr class="x"><td class="f">' + esc(x['欄位']) + '</td>'
@@ -902,11 +931,11 @@ function renderCompare(d) {
         h += '</tbody></table>';
       } else if (r['狀態'] === 'ok') {
         h += '<span class="cmp-tag" style="background:#f2f9f2;color:#1a4d2a;'
-           + 'border:1px solid #b7d9c0">相符</span></div>';
+           + 'border:1px solid #b7d9c0">相符</span>' + incBtn(i) + '</div>';
       } else {
         h += '<span class="cmp-tag o">'
            + (r['狀態'] === 'pdf_only' ? '薪資清冊有，AF 查無' : 'AF 有，清冊查無')
-           + '</span></div>';
+           + '</span>' + incBtn(i) + '</div>';
       }
       h += '</div>';
     });
@@ -919,6 +948,27 @@ function renderCompare(d) {
 function card(lbl, val, color) {
   return '<div class="cmp-card"><div class="lbl">' + lbl + '</div>'
        + '<div class="val" style="color:' + color + '">' + val + '</div></div>';
+}
+
+/* ── 納入本次稽核（僅影響顯示與統計，不改動排除設定與學習） ── */
+function incBtn(i) {
+  return '<button type="button" class="inc-btn" onclick="includeRow(' + i + ')">'
+       + '納入本次稽核</button>';
+}
+function incBack(i) {
+  return '<span class="inc-note">已人工納入</span>'
+       + '<button type="button" class="inc-btn" onclick="excludeRow(' + i + ')">'
+       + '移回未列入</button>';
+}
+function includeRow(i) {
+  const r = window._cmp.results[i];
+  r['次要'] = false; r['_納入'] = true;
+  renderCompare(window._cmp);
+}
+function excludeRow(i) {
+  const r = window._cmp.results[i];
+  r['次要'] = true; r['_納入'] = false;
+  renderCompare(window._cmp);
 }
 </script>
 </body>
