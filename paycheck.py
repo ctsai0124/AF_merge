@@ -400,3 +400,84 @@ def annotate_arith(people):
         p['_arith_ok'] = ok
         p['_arith_diff'] = diff
     return people
+
+
+# ── 9. 由 Mac 端 OCR 結果轉為可比對資料 ─────────────────
+
+def from_ocr(ocr_people, af_records):
+    """
+    ocr_people：Mac 端 parse_tokens.py 的輸出
+    回傳 (可直接比對的人員, 需使用者確認的列)
+
+    規則：
+    - 加總相符且姓名可對應 → 直接比對
+    - 其餘 → 保留 OCR 讀到的數值交由使用者核對，並標示可疑欄位
+    - 絕不以 AF 的金額回填，否則會掩蓋真正的差異
+    """
+    known = {a['姓名'] for a in af_records}
+    good, need = [], []
+
+    for p in ocr_people or []:
+        raw = (p.get('姓名') or '').strip()
+        fixed, changed = fix_name(raw, known)
+        vals = {
+            '薪俸': _n(p.get('薪俸', 0)),
+            '專業加給': _n(p.get('專業加給', 0)),
+            '主管加給': _n(p.get('主管加給', 0)),
+            '導師特教': _n(p.get('導師特教', 0)),
+        }
+        total = _n(p.get('應發金額', 0))
+        s = sum(vals.values())
+        name_ok = fixed in known
+        sum_ok = bool(total) and s == total
+        conf = p.get('最低信心')
+
+        if name_ok and sum_ok:
+            good.append({'姓名': fixed, '職稱': re.sub(r'^\d+\s*', '', p.get('職稱', '')).strip(),
+                         '應發金額': total, '_ocr_name_fixed': changed, **vals})
+            continue
+
+        reasons = []
+        if not name_ok:
+            reasons.append(f'姓名「{raw or "空白"}」無法對應 AF 名單')
+        if not total:
+            reasons.append('未讀到應發金額，無法驗算')
+        elif not sum_ok:
+            reasons.append(f'四項相加 {s:,} 與應發金額 {total:,} 不符（差 {total - s:+,}）')
+        if conf is not None and conf < 0.5:
+            reasons.append(f'辨識信心偏低（{conf}）')
+
+        need.append({
+            '原始姓名': raw, '建議姓名': fixed if name_ok else '',
+            '職稱': re.sub(r'^\d+\s*', '', p.get('職稱', '')).strip(),
+            '應發金額': total, '原因': reasons,
+            '姓名可疑': not name_ok, '金額可疑': not sum_ok,
+            **vals,
+        })
+
+    return good, need
+
+
+def compare_with_fixed(good, fixed_rows, af_records):
+    """合併「自動通過」與「使用者更正後」的資料再比對"""
+    merged = list(good)
+    for r in fixed_rows or []:
+        name = (r.get('姓名') or '').strip()
+        if not name:
+            continue
+        merged.append({
+            '姓名': name, '職稱': r.get('職稱', ''),
+            '薪俸': _n(r.get('薪俸', 0)), '專業加給': _n(r.get('專業加給', 0)),
+            '主管加給': _n(r.get('主管加給', 0)), '導師特教': _n(r.get('導師特教', 0)),
+            '應發金額': _n(r.get('應發金額', 0)), '_user_fixed': True,
+        })
+    return compare(merged, af_records)
+
+
+def fix_name(raw, known_names):
+    """用 AF 名單校正 OCR 姓名，回傳 (校正後, 是否有改動)"""
+    raw = (raw or '').strip()
+    if not raw or raw in known_names:
+        return raw, False
+    m = get_close_matches(raw, list(known_names), n=1, cutoff=0.5)
+    return (m[0], True) if m else (raw, False)

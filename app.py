@@ -25,7 +25,52 @@ NUM_COLS = {'清冊序號', '總金額', '支領數額', '待遇差額', '補發
 
 # ── PDF 比對：見 paycheck.py ──
 import paycheck
-import threading
+import threading, time
+
+# ── OCR 工作佇列（供 Mac 端 Vision 辨識使用）──────────────
+import base64, uuid
+_ocr_lock = threading.Lock()
+_ocr_jobs = {}          # job_id -> dict
+OCR_JOB_TTL = 600       # 工作逾時秒數
+
+# 輪詢節奏：有人在用時密集詢問，閒置時放慢，減少無謂請求
+ACTIVE_WINDOW = 600     # 最後一次操作起算的活躍期（秒）
+POLL_ACTIVE = 3         # 活躍期的輪詢間隔
+POLL_IDLE = 60          # 閒置期的輪詢間隔
+_last_active = 0.0
+
+
+def touch_active():
+    """記錄有使用者正在操作"""
+    global _last_active
+    _last_active = time.time()
+
+
+def next_poll_sec():
+    """依目前是否活躍，回傳建議的輪詢間隔"""
+    if _ocr_jobs:
+        return POLL_ACTIVE
+    return POLL_ACTIVE if (time.time() - _last_active) < ACTIVE_WINDOW else POLL_IDLE
+
+
+def _ocr_key():
+    return os.environ.get('OCR_KEY', '').strip()
+
+
+def _ocr_auth(req):
+    k = _ocr_key()
+    return bool(k) and req.headers.get('X-OCR-KEY', '') == k
+
+
+def _ocr_gc():
+    now = time.time()
+    for jid in [j for j, v in _ocr_jobs.items() if now - v['created'] > OCR_JOB_TTL]:
+        _ocr_jobs.pop(jid, None)
+
+
+def ocr_enabled():
+    return bool(_ocr_key())
+
 
 # ── 使用次數計數器 ────────────────────────────────────────
 _counter_lock = threading.Lock()
@@ -220,6 +265,7 @@ def build_audit_docx(school_name, sn2, yearmonth):
 @app.route('/')
 def index():
     bump_counter('visits')
+    touch_active()
     return render_template('index.html')
 
 
@@ -361,6 +407,7 @@ def compare_pdf():
     if 'af' not in request.files or not request.files['af'].filename:
         return jsonify({'error': '請上傳 AF 資料檔'}), 400
 
+    touch_active()
     af_f = request.files['af']
     af_bytes, af_name = af_f.read(), af_f.filename
     pdf_bytes = request.files['salary_pdf'].read()
@@ -374,18 +421,48 @@ def compare_pdf():
 
     # ── 掃描圖檔 → 無法解析 ──
     if not paycheck.has_text_layer(pdf_bytes):
+        if ocr_enabled():
+            jid = uuid.uuid4().hex[:12]
+            with _ocr_lock:
+                _ocr_gc()
+                _ocr_jobs[jid] = {'status': 'pending', 'created': time.time(),
+                                  'pdf': pdf_bytes, 'af': af_bytes, 'af_name': af_name,
+                                  'people': None, 'error': None}
+            return jsonify({'success': True, 'mode': 'ocr_pending', 'job_id': jid,
+                            'notice': '此份為掃描圖檔，已送交文字辨識，請稍候…'})
+
         return jsonify({
-            'error': ('此 PDF 為掃描圖檔，無法自動比對。\n'
-                      '請向對方索取薪資系統直接匯出的電子版 PDF；'
-                      '或先用 Adobe Acrobat、Google 雲端硬碟等工具轉成可選取文字的 PDF 再上傳。'),
-            'is_scanned': True
+            'error': '此 PDF 為掃描圖檔，無法自動比對',
+            'code': 'scanned',
+            'title': '這份 PDF 是掃描圖檔，無法比對',
+            'why': '整份文件是一張張圖片，裡面沒有任何可讀取的文字資料，'
+                   '系統無法取得薪俸、加給等金額。',
+            'how': [
+                '請向製表單位索取由薪資系統「直接匯出」的 PDF。',
+                '分辨方法：用滑鼠在 PDF 上拖曳，選得到文字的才可以用；'
+                '掃描檔只會選到一整塊區域。',
+                '請注意：把掃描檔用文字辨識軟體轉換過的檔案同樣不行，'
+                '因為表格的欄列對應關係已經被打散。'
+            ]
         }), 422
 
     # ── 有文字層 → 直接解析比對 ──
     try:
         pdf_people, layout = paycheck.parse_pdf(pdf_bytes)
         if not pdf_people:
-            return jsonify({'error': 'PDF 解析結果為空，請確認清冊格式'}), 400
+            return jsonify({
+                'error': '偵測不到表格結構，無法比對',
+                'code': 'no_table',
+                'title': '這份 PDF 有文字，但讀不到表格',
+                'why': '檔案裡雖然有文字，但欄與列的對應關係已經消失，'
+                       '系統無法判斷哪個金額屬於哪個人、哪個項目。',
+                'how': [
+                    '最常見的原因是：這份檔案原本是掃描圖，'
+                    '後來用文字辨識軟體（OCR）轉過一次。',
+                    '轉換過程只會把文字攤平成一長串，表格會被拆散，'
+                    '所以看得到文字也無法使用。',
+                    '請改用薪資系統「直接匯出」的原始 PDF。'
+                ]}), 400
 
         paycheck.annotate_arith(pdf_people)
         bad_arith = [p['姓名'] for p in pdf_people if p.get('_arith_ok') is False]
@@ -405,6 +482,120 @@ def compare_pdf():
 
     except Exception as e:
         return jsonify({'error': '比對錯誤：' + str(e)}), 500
+
+
+@app.route('/ocr/submit-fixed', methods=['POST'])
+def ocr_submit_fixed():
+    """使用者更正可疑列後，合併比對"""
+    d = request.get_json(silent=True) or {}
+    jid = d.get('job_id')
+    with _ocr_lock:
+        j = _ocr_jobs.get(jid)
+        if not j:
+            return jsonify({'error': '此次辨識結果已逾時，請重新上傳'}), 404
+        good, af_bytes, af_name = j.get('good', []), j['af'], j['af_name']
+    try:
+        af_records, af_warns = paycheck.load_af(af_bytes, af_name)
+        out = paycheck.compare_with_fixed(good, d.get('rows') or [], af_records)
+        out.update({'status': 'done', 'success': True, 'mode': 'ocr',
+                    'layout': '掃描圖檔（文字辨識＋人工確認）',
+                    'af_count': len(af_records),
+                    'pdf_count': len(good) + len(d.get('rows') or []),
+                    'warnings': af_warns, 'counts': bump_counter('compares')})
+        with _ocr_lock:
+            _ocr_jobs.pop(jid, None)
+        return jsonify(out)
+    except Exception as e:
+        return jsonify({'error': '比對錯誤：' + str(e)}), 500
+
+
+@app.route('/ocr/claim')
+def ocr_claim():
+    """Mac 端領取待辨識工作"""
+    if not _ocr_auth(request):
+        return jsonify({'error': 'unauthorized'}), 401
+    with _ocr_lock:
+        _ocr_gc()
+        for jid, j in _ocr_jobs.items():
+            if j['status'] == 'pending':
+                j['status'] = 'processing'
+                return jsonify({'job_id': jid,
+                                'pdf_b64': base64.b64encode(j['pdf']).decode(),
+                                'next_poll': POLL_ACTIVE})
+    return jsonify({'job_id': None, 'next_poll': next_poll_sec()})
+
+
+@app.route('/ocr/result', methods=['POST'])
+def ocr_result():
+    """Mac 端回傳辨識結果"""
+    if not _ocr_auth(request):
+        return jsonify({'error': 'unauthorized'}), 401
+    d = request.get_json(silent=True) or {}
+    jid = d.get('job_id')
+    with _ocr_lock:
+        j = _ocr_jobs.get(jid)
+        if not j:
+            return jsonify({'error': 'job not found'}), 404
+        if d.get('error'):
+            j['status'] = 'failed'
+            j['error'] = d['error']
+        else:
+            j['status'] = 'done'
+            j['people'] = d.get('people') or []
+    return jsonify({'ok': True})
+
+
+@app.route('/ocr/status/<job_id>')
+def ocr_status(job_id):
+    """前端輪詢；完成後直接回傳比對結果"""
+    with _ocr_lock:
+        j = _ocr_jobs.get(job_id)
+        if not j:
+            return jsonify({'status': 'expired'}), 404
+        st, people, err = j['status'], j['people'], j['error']
+        af_bytes, af_name = j['af'], j['af_name']
+
+    if st == 'need_review':
+        return jsonify({'status': 'need_review_pending'})
+
+    if st in ('pending', 'processing'):
+        waited = 0
+        with _ocr_lock:
+            waited = int(time.time() - _ocr_jobs[job_id]['created'])
+        if waited > 120:
+            return jsonify({'status': 'timeout',
+                            'error': '辨識服務目前無回應，請改用薪資系統直接匯出的 PDF。'})
+        return jsonify({'status': st, 'waited': waited})
+
+    if st == 'failed':
+        return jsonify({'status': 'failed', 'error': err or '辨識失敗'})
+
+    try:
+        af_records, af_warns = paycheck.load_af(af_bytes, af_name)
+        good, need = paycheck.from_ocr(people, af_records)
+
+        if need:
+            with _ocr_lock:
+                if job_id in _ocr_jobs:
+                    _ocr_jobs[job_id]['good'] = good
+                    _ocr_jobs[job_id]['status'] = 'need_review'
+            return jsonify({
+                'status': 'need_review', 'success': True, 'job_id': job_id,
+                'auto_ok': len(good), 'need': need,
+                'af_names': sorted({a['姓名'] for a in af_records}),
+                'warnings': af_warns,
+            })
+
+        out = paycheck.compare(good, af_records)
+        out.update({'status': 'done', 'success': True, 'mode': 'ocr',
+                    'layout': '掃描圖檔（文字辨識）', 'af_count': len(af_records),
+                    'pdf_count': len(good), 'warnings': af_warns,
+                    'counts': bump_counter('compares')})
+        with _ocr_lock:
+            _ocr_jobs.pop(job_id, None)
+        return jsonify(out)
+    except Exception as e:
+        return jsonify({'status': 'failed', 'error': '比對錯誤：' + str(e)})
 
 
 # ── 原有下載 / 列印路由 ────────────────────────────────────
