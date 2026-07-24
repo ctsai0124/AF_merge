@@ -107,6 +107,9 @@ tbody td.name-col{text-align:left;font-weight:600}
 .act-box{border:1px solid #d5dae2;padding:14px 16px}
 .act-box h4{font-size:12px;color:#1a3a5c;margin-bottom:4px;font-weight:700}
 .act-box .d{font-size:11px;color:#666;line-height:1.7;margin-bottom:11px;min-height:34px}
+.act-box .msg{margin-top:11px}
+.act-box .msg:empty{margin-top:0}
+.act-box .ok-msg,.act-box .warn-msg,.act-box .err-msg{font-size:11px;padding:7px 10px;line-height:1.7}
 .act-order{background:#eef3f9;border:1px solid #c7d8ea;padding:7px 12px;font-size:11px;color:#1a3a5c;line-height:1.7;margin-bottom:14px}
 .cmp-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;margin:16px 0 14px}
 .cmp-card{border:1px solid #d5dae2;background:#f7f9fb;padding:10px 12px;text-align:center}
@@ -289,6 +292,7 @@ tbody td.name-col{text-align:left;font-weight:600}
             <button class="btn-cmp" id="btn-cmp" onclick="doCompare()" disabled>比對資料</button>
             <div class="loader" id="cmp-loader"><div class="spin"></div>解析比對中...</div>
           </div>
+          <div class="msg" id="cmp-msg"></div>
         </div>
         <div class="act-box">
           <h4>② 執行排序</h4>
@@ -297,10 +301,9 @@ tbody td.name-col{text-align:left;font-weight:600}
             <button class="btn-go" id="btn-go" onclick="doProcess()" disabled>執行排序</button>
             <div class="loader" id="loader"><div class="spin"></div>排序處理中...</div>
           </div>
+          <div class="msg" id="msg"></div>
         </div>
       </div>
-      <div class="msg" id="msg"></div>
-      <div class="msg" id="cmp-msg"></div>
     </div>
   </div>
 
