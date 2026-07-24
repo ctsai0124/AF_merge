@@ -496,6 +496,18 @@ async function printAll() {
   window.open('/print-all', '_blank');
 }
 
+/* ── 掃描檔：使用者選擇改用文字辨識 ── */
+async function startOCR(jobId) {
+  try {
+    const res = await fetch('/ocr/start/' + jobId, {method: 'POST'});
+    const d = await res.json();
+    if (!res.ok || !d.ok) { cmpMsg('err', esc(d.error || '無法啟動辨識')); return; }
+    pollOCR(jobId, '已送交文字辨識，正在處理…');
+  } catch (e) {
+    cmpMsg('err', '連線失敗：' + esc(e.message));
+  }
+}
+
 /* ── 掃描檔：等待 Mac 端文字辨識 ── */
 async function pollOCR(jobId, notice) {
   document.getElementById('compare-section').style.display = 'block';
@@ -647,7 +659,17 @@ function showAlert(d) {
         + '<div style="font-size:12px;font-weight:700;color:#7a5200;margin-bottom:5px">'
         + '該怎麼處理</div><ol>';
   (d.how || []).forEach(x => { h += '<li>' + esc(x) + '</li>'; });
-  h += '</ol></div>';
+  h += '</ol>';
+  if (d.ocr_available && d.job_id) {
+    h += '<div style="border-top:1px solid #ecdca8;margin-top:12px;padding-top:12px">'
+       + '<div style="font-size:12px;color:#5a3e00;line-height:1.7;margin-bottom:9px">'
+       + '若一時取得不到電子版，可改用文字辨識讀取此掃描檔。<br>'
+       + '<b>辨識結果不保證完全正確</b>，系統會將可疑的資料列出來，'
+       + '請務必對照紙本確認後再採用。</div>'
+       + '<button class="btn-cmp" onclick="startOCR(\'' + d.job_id + '\')">'
+       + '改用文字辨識讀取</button></div>';
+  }
+  h += '</div>';
   document.getElementById('cmp-msg').innerHTML = '';
   document.getElementById('cmp-result').innerHTML = h;
   document.getElementById('compare-section').style.display = 'block';
