@@ -380,7 +380,10 @@ def compare(pdf_people, af_records):
             '身分證': a['身分證'], '配對依據': why,
             '狀態': 'diff' if diffs else 'ok', '差異': diffs,
             '需確認': why not in ('姓名',),
-            '次要': bool(p.get('_次要')), '次要原因': p.get('_次要原因', ''),
+            # AF 有配對到的人一律列入主清單、不收合：
+            # AF 有建 ＝ 屬於稽核範圍（例：AF 有建的約僱人員）。
+            # 排除規則只適用於「清冊有、AF 無」的非正式人員。
+            '次要': False, '次要原因': '',
         })
     for p in pdf_only:
         results.append({'姓名': p['姓名'], '職稱': p.get('職稱', ''), '單位': '',
