@@ -134,6 +134,16 @@ tbody td.name-col{text-align:left;font-weight:600}
 .rev-tbl td.nm{text-align:left;font-weight:600;background:#fafafa}
 .rev-tbl input{width:82px;padding:4px 6px;border:1px solid #cfd6de;font-size:12px;text-align:right;font-family:inherit}
 .rev-tbl input.name{width:96px;text-align:left}
+.rev-tbl .btn-x{background:#fff;border:1px solid #bbb;color:#666;font-size:11px;
+  padding:3px 9px;cursor:pointer;font-family:inherit;white-space:nowrap}
+.rev-tbl .btn-x:hover{background:#fff2f2;border-color:#cc5555;color:#a32d2d}
+.rev-tbl tr.gone td{opacity:.35}
+.rev-tbl tr.gone input{text-decoration:line-through}
+.ex-bar{background:#f4f7fa;border:1px solid #d5dae2;padding:9px 13px;font-size:12px;
+  margin-bottom:10px;line-height:1.9}
+.ex-bar label{margin-right:16px;cursor:pointer}
+.ex-note{background:#eef3f9;border:1px solid #c7d8ea;padding:8px 13px;font-size:12px;
+  color:#1a3a5c;margin-bottom:10px;line-height:1.8}
 .rev-tbl input.sus{border:2px solid #cc5555;background:#fff6f6}
 .rev-tbl input:focus{outline:none;border-color:#1a3a5c;background:#fffdf0}
 .rev-tbl tr.ok td{background:#f2f9f2}
@@ -571,9 +581,22 @@ function renderReview(d) {
     + '欄位已填入辨識到的數值，<b>請對照紙本清冊確認</b>，紅框處特別需要留意。<br>'
     + '四項相加等於應發金額時，該列會轉為綠色。</div>';
 
+  const titles = [...new Set(d.need.map(r => (r['職稱']||'').trim()).filter(Boolean))];
+  if (titles.length) {
+    h += '<div class="ex-bar"><b>不納入稽核的職稱</b>'
+       + '（勾選後本次即排除，並記住供這所學校下次使用）：<br>';
+    titles.forEach((t, k) => {
+      h += '<label><input type="checkbox" id="ext' + k + '" value="' + esc(t)
+         + '" onchange="toggleTitle(this)"> ' + esc(t) + '</label>';
+    });
+    h += '<br><span style="font-size:11px;color:#777">'
+       + '職稱是逐月從清冊讀取的，換人也會自動套用；'
+       + '若只想排除特定一位，請用該列右側的「排除」按鈕。</span></div>';
+  }
+
   h += '<table class="rev-tbl"><thead><tr><th>姓名</th><th>職稱</th>'
      + '<th>薪俸</th><th>專業加給</th><th>職務加給</th><th>導師＋特教</th>'
-     + '<th>應發金額</th><th>驗算</th></tr></thead><tbody>';
+     + '<th>應發金額</th><th>驗算</th><th>操作</th></tr></thead><tbody>';
 
   d.need.forEach((r, i) => {
     const ns = r['姓名可疑'] ? ' sus' : '';
@@ -588,8 +611,9 @@ function renderReview(d) {
     });
     h += '<td><input data-i="' + i + '" data-f="應發金額" class="' + ms
        + '" value="' + r['應發金額'] + '" oninput="onRev(this)"></td>'
-       + '<td class="rev-chk" id="rc' + i + '">—</td></tr>'
-       + '<tr><td colspan="8" class="rev-why">↳ '
+       + '<td class="rev-chk" id="rc' + i + '">—</td>'
+       + '<td><button class="btn-x" onclick="dropRow(' + i + ')" id="bx' + i + '">排除</button></td></tr>'
+       + '<tr><td colspan="9" class="rev-why">↳ '
        + (r['原因'] || []).map(esc).join('；') + '</td></tr>';
   });
   h += '</tbody></table>';
@@ -604,6 +628,67 @@ function renderReview(d) {
   document.getElementById('cmp-result').innerHTML = h;
   document.getElementById('compare-section').style.display = 'block';
   d.need.forEach((_, i) => revCheck(i));
+}
+
+let exTitles = [], exNames = [];
+
+async function addLearned(school, n) {
+  const picked = [];
+  for (let k = 0; k < n; k++) {
+    const el = document.getElementById('lt' + k);
+    if (el && el.checked) picked.push(el.value);
+  }
+  if (!picked.length) { cmpMsg('warn', '請先勾選要排除的職稱'); return; }
+  try {
+    const cur = await (await fetch('/settings/exclusions?school=' + encodeURIComponent(school))).json();
+    const titles = [...new Set([...(cur.titles || []), ...picked])];
+    await fetch('/settings/exclusions', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({school, titles, names: cur.names || []})
+    });
+    cmpMsg('info', '已加入排除清單：' + picked.join('、') + '　請重新執行比對以套用。');
+  } catch (e) { cmpMsg('err', '設定儲存失敗'); }
+}
+
+async function toggleDefault(school) {
+  const on = document.getElementById('exDefault').checked;
+  try {
+    await fetch('/settings/exclusions', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({school, titles: [], names: [], use_default: on})
+    });
+    cmpMsg('info', '設定已更新，請重新執行比對以套用。');
+  } catch (e) { cmpMsg('err', '設定儲存失敗'); }
+}
+
+function dropRow(i) {
+  const tr = document.getElementById('rv' + i), btn = document.getElementById('bx' + i);
+  const gone = tr.classList.toggle('gone');
+  revRows[i]._排除 = gone;
+  btn.textContent = gone ? '復原' : '排除';
+  const nm = (revRows[i]['姓名'] || revRows[i]['建議姓名'] || revRows[i]['原始姓名'] || '').trim();
+  if (nm) {
+    exNames = exNames.filter(x => x !== nm);
+    if (gone) exNames.push(nm);
+  }
+  tr.querySelectorAll('input').forEach(el => el.disabled = gone);
+}
+
+function toggleTitle(cb) {
+  const t = cb.value;
+  exTitles = exTitles.filter(x => x !== t);
+  if (cb.checked) exTitles.push(t);
+  revRows.forEach((r, i) => {
+    if ((r['職稱'] || '').includes(t)) {
+      const tr = document.getElementById('rv' + i);
+      const btn = document.getElementById('bx' + i);
+      if (!tr) return;
+      r._排除 = cb.checked;
+      tr.classList.toggle('gone', cb.checked);
+      btn.textContent = cb.checked ? '復原' : '排除';
+      tr.querySelectorAll('input').forEach(el => el.disabled = cb.checked);
+    }
+  });
 }
 
 function onRev(el) {
@@ -631,13 +716,15 @@ function revCheck(i) {
 }
 
 async function submitReview() {
-  const rows = revRows.filter(r => (r['姓名'] || r['建議姓名'] || '').trim())
+  const rows = revRows.filter(r => !r._排除)
+                      .filter(r => (r['姓名'] || r['建議姓名'] || '').trim())
                       .map(r => ({...r, 姓名: (r['姓名'] || r['建議姓名'] || '').trim()}));
   document.getElementById('cmp-loader').style.display = 'flex';
   try {
     const res = await fetch('/ocr/submit-fixed', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({job_id: revJob, rows})
+      body: JSON.stringify({job_id: revJob, rows,
+                            remember_titles: exTitles, remember_names: exNames})
     });
     const d = await res.json();
     if (!res.ok || !d.success) { cmpMsg('err', esc(d.error || '比對失敗')); return; }
@@ -764,6 +851,48 @@ function renderCompare(d) {
      + (s['待人工指定'] ? card('待人工指定', s['待人工指定'], '#a32d2d') : '')
      + (s['加總不符'] ? card('加總不符', s['加總不符'], '#8a5a11') : '')
      + '</div>';
+
+  if (d.excluded && d.excluded.length) {
+    const byReason = {};
+    d.excluded.forEach(x => {
+      (byReason[x['原因']] = byReason[x['原因']] || []).push(x['姓名']);
+    });
+    h += '<div class="ex-note"><b>已略過 ' + d.excluded.length + ' 人不納入稽核</b>';
+    for (const why in byReason) {
+      h += '<br>· ' + esc(why) + '：' + byReason[why].map(esc).join('、');
+    }
+    if (d.school_key) {
+      h += '<br><label style="font-size:11px;cursor:pointer;margin-top:4px;display:inline-block">'
+         + '<input type="checkbox" id="exDefault" '
+         + ((d.exclusions && d.exclusions.use_default !== false) ? 'checked' : '')
+         + ' onchange="toggleDefault(\'' + esc(d.school_key) + '\')"> '
+         + '自動排除非正式人員（代理、長代、教保員等）</label>';
+    }
+    h += '</div>';
+  }
+
+  if (d.learned && d.learned.length) {
+    h += '<div class="ex-note" style="background:#fffbe6;border-color:#d4aa00;color:#5a3e00">'
+       + '<b>系統觀察到以下職稱從未出現在 AF 資料中</b><br>';
+    d.learned.forEach((x, k) => {
+      h += '<label style="display:inline-block;margin:4px 14px 0 0;cursor:pointer">'
+         + '<input type="checkbox" id="lt' + k + '" value="' + esc(x['職稱']) + '"> '
+         + esc(x['職稱']) + ' <span style="font-size:11px;color:#7a5200">（累計 '
+         + x['總人次'] + ' 人次／' + x['檔案數'] + ' 份檔案）</span></label>';
+    });
+    h += '<br><button class="btn-cmp" style="margin-top:8px;padding:5px 16px;font-size:12px" '
+       + 'onclick="addLearned(\'' + esc(d.school_key || '') + '\',' + d.learned.length + ')">'
+       + '加入排除清單</button>'
+       + '<span style="font-size:11px;margin-left:8px">加入後這所學校往後都會自動略過。</span></div>';
+  }
+
+  if (d.wrong_exclusions && d.wrong_exclusions.length) {
+    h += '<div class="ex-note" style="background:#fdecec;border-color:#cc5555;color:#a32d2d">'
+       + '<b>⚠ 下列職稱雖被歸類為非正式人員，卻曾出現在 AF 中</b><br>'
+       + d.wrong_exclusions.map(x => esc(x['職稱']) + '（' + x['出現在AF'] + '/'
+           + x['總人次'] + ' 人次在 AF）').join('、')
+       + '<br><span style="font-size:11px">可能是預設規則誤判，建議關閉自動排除或改用個別排除。</span></div>';
+  }
 
   const okNames = [];
   d.results.forEach(r => {
