@@ -245,6 +245,17 @@ def title_to_dept(title):
     return None
 
 
+def _similar_enough(a, b):
+    """
+    僅接受「字數相同且只差一個字」的情況，視為文字辨識誤差。
+    例：吳盂謙 / 吳孟謙 → 可接受
+        楊棨翔 / 林怡慈 → 不接受
+    """
+    if len(a) != len(b) or not a:
+        return False
+    return sum(1 for x, y in zip(a, b) if x != y) == 1
+
+
 # ── 4. 配對 ───────────────────────────────────────────
 
 def match(pdf_people, af_records):
@@ -319,21 +330,22 @@ def match(pdf_people, af_records):
         if left_p or left_a:
             ambiguous.append({'姓名': name, 'pdf': left_p, 'af': left_a})
 
-    # 姓名完全找不到 → 模糊比對 + 金額指紋救援
+    # 姓名完全找不到 → 僅做「字形相近」的模糊比對
+    #
+    # ⚠ 此處刻意不使用金額比對來配對不同姓名的人。
+    #    人員異動時，接任者常沿用相同職務與薪級，四項金額會完全相同
+    #    （例：前任訓導組長離職、新任者薪級相同）。若以金額反推，
+    #    會把兩個不同的人誤判為同一人，使真正的人員異動被掩蓋。
+    #    姓名不同就是不同人，寧可列為「查無此人」交由使用者判斷。
     unmatched = [p for p, c in pending if not c]
     for p in unmatched:
         pool = [a for a in af_records if a['身分證'] not in used]
-        m = get_close_matches(p['姓名'], [a['姓名'] for a in pool], n=1, cutoff=0.5)
-        if m:
+        m = get_close_matches(p['姓名'], [a['姓名'] for a in pool], n=1, cutoff=0.75)
+        if m and _similar_enough(p['姓名'], m[0]):
             c = [a for a in pool if a['姓名'] == m[0]]
             if len(c) == 1:
-                take(p, c[0], f'姓名模糊（AF 為「{m[0]}」）')
+                take(p, c[0], f'姓名相近（AF 為「{m[0]}」，請確認是否同一人）')
                 continue
-        fp = tuple(p.get(f, 0) for f in FIELDS)
-        c = [a for a in pool if tuple(a.get(f, 0) for f in FIELDS) == fp]
-        if len(c) == 1:
-            take(p, c[0], f'金額指紋（AF 為「{c[0]["姓名"]}」）')
-            continue
         pdf_only.append(p)
 
     af_only = [a for a in af_records if a['身分證'] not in used]
