@@ -368,23 +368,30 @@ def compare(pdf_people, af_records):
             '身分證': a['身分證'], '配對依據': why,
             '狀態': 'diff' if diffs else 'ok', '差異': diffs,
             '需確認': why not in ('姓名',),
+            '次要': bool(p.get('_次要')), '次要原因': p.get('_次要原因', ''),
         })
     for p in pdf_only:
         results.append({'姓名': p['姓名'], '職稱': p.get('職稱', ''), '單位': '',
-                        '身分證': '', '配對依據': '', '狀態': 'pdf_only', '差異': []})
+                        '身分證': '', '配對依據': '', '狀態': 'pdf_only', '差異': [],
+                        '次要': bool(p.get('_次要')), '次要原因': p.get('_次要原因', '')})
     for a in af_only:
         results.append({'姓名': a['姓名'], '職稱': '', '單位': a.get('單位', ''),
-                        '身分證': a['身分證'], '配對依據': '', '狀態': 'af_only', '差異': []})
+                        '身分證': a['身分證'], '配對依據': '', '狀態': 'af_only',
+                        '差異': [], '次要': False, '次要原因': ''})
 
     order = {'diff': 0, 'pdf_only': 1, 'af_only': 2, 'ok': 3}
     results.sort(key=lambda r: (order[r['狀態']], r['姓名']))
 
+    main = [r for r in results if not r.get('次要')]
+    sub = [r for r in results if r.get('次要')]
     summary = {
-        '一致': sum(1 for r in results if r['狀態'] == 'ok'),
-        '有差異': sum(1 for r in results if r['狀態'] == 'diff'),
-        '清冊有AF無': sum(1 for r in results if r['狀態'] == 'pdf_only'),
-        'AF有清冊無': sum(1 for r in results if r['狀態'] == 'af_only'),
+        '一致': sum(1 for r in main if r['狀態'] == 'ok'),
+        '有差異': sum(1 for r in main if r['狀態'] == 'diff'),
+        '清冊有AF無': sum(1 for r in main if r['狀態'] == 'pdf_only'),
+        'AF有清冊無': sum(1 for r in main if r['狀態'] == 'af_only'),
         '待人工指定': len(ambiguous),
+        '其他人員': len(sub),
+        '其他人員有差異': sum(1 for r in sub if r['狀態'] in ('diff', 'pdf_only')),
     }
     return {'summary': summary, 'results': results, 'ambiguous': ambiguous}
 
@@ -423,41 +430,35 @@ def suggest_exclude_titles(people):
     return sorted(found)
 
 
-def apply_exclusions(people, ex_titles=None, ex_names=None, use_default=True):
+def mark_exclusions(people, ex_titles=None, ex_names=None, use_default=True):
     """
-    依職稱關鍵字或姓名排除不需稽核的人員。
+    標記不需納入稽核的人員，但**不從資料中移除**——
+    全部人員仍會完成比對，只是在介面上預設收合。
 
     比對只看職稱中「兼」之前的部分，避免「教師兼代理主任」這類
     正式人員被誤判為代理人員。
-
-    回傳 (保留的人員, 被排除的說明清單)
     """
     ex_titles = [t.strip() for t in (ex_titles or []) if t.strip()]
     ex_names = set(n.strip() for n in (ex_names or []) if n.strip())
     defaults = DEFAULT_EXCLUDE_TITLES if use_default else []
 
-    keep, dropped = [], []
     for p in people:
         title = (p.get('職稱') or '').strip()
         head = title_head(title)
-        # 待確認的資料可能還沒有確定的姓名，依序取用可得的欄位
         name = (p.get('姓名') or p.get('建議姓名')
                 or p.get('原始姓名') or '').strip()
 
-        hit = next((t for t in ex_titles if t in head), None)
+        hit = next((t for t in ex_titles if t in head), None) \
+            or next((t for t in defaults if t in head), None)
         if hit:
-            dropped.append({'姓名': name, '職稱': title, '原因': f'職稱含「{hit}」'})
-            continue
-        hit = next((t for t in defaults if t in head), None)
-        if hit:
-            dropped.append({'姓名': name, '職稱': title,
-                            '原因': f'非正式人員（職稱含「{hit}」）', '預設': True})
-            continue
-        if name in ex_names:
-            dropped.append({'姓名': name, '職稱': title, '原因': '個別排除'})
-            continue
-        keep.append(p)
-    return keep, dropped
+            p['_次要'] = True
+            p['_次要原因'] = f'職稱含「{hit}」'
+        elif name in ex_names:
+            p['_次要'] = True
+            p['_次要原因'] = '個別指定'
+        else:
+            p['_次要'] = False
+    return people
 
 
 def title_observations(people, af_names):

@@ -559,9 +559,14 @@ def compare_pdf():
         af_names = {a['姓名'] for a in af_records}
         obs = paycheck.title_observations(pdf_people, af_names)
         stats = merge_title_stats(obs)
-        learned, wrong = paycheck.learned_suggestions(stats)
+        learned, _ = paycheck.learned_suggestions(stats)
+        if learned:
+            auto = sorted({x['職稱'] for x in learned} | set(ex['titles']))
+            if auto != sorted(ex['titles']):
+                save_exclusions(skey, auto, ex['names'])
+                ex = load_exclusions(skey)
 
-        pdf_people, dropped = paycheck.apply_exclusions(
+        paycheck.mark_exclusions(
             pdf_people, ex['titles'], ex['names'], ex.get('use_default', True))
 
         paycheck.annotate_arith(pdf_people)
@@ -578,11 +583,7 @@ def compare_pdf():
         out['af_count'] = len(af_records)
         out['pdf_count'] = len(pdf_people)
         out['warnings'] = af_warns
-        out['excluded'] = dropped
         out['school_key'] = skey
-        out['exclusions'] = ex
-        out['learned'] = learned
-        out['wrong_exclusions'] = wrong
         out['counts'] = bump_counter('compares')
         return jsonify(out)
 
@@ -726,9 +727,19 @@ def ocr_status(job_id):
         merge_title_stats(paycheck.title_observations(good + need, af_names_set))
 
         ud = ex.get('use_default', True)
-        good, dropped_g = paycheck.apply_exclusions(good, ex['titles'], ex['names'], ud)
-        need, dropped_n = paycheck.apply_exclusions(need, ex['titles'], ex['names'], ud)
-        dropped = dropped_g + dropped_n
+        paycheck.mark_exclusions(good, ex['titles'], ex['names'], ud)
+        paycheck.mark_exclusions(need, ex['titles'], ex['names'], ud)
+        # 待確認清單中屬於「其他人員」者不必打擾使用者，直接沿用辨識值
+        for n in [x for x in need if x.get('_次要')]:
+            good.append({
+                '姓名': (n.get('建議姓名') or n.get('原始姓名') or '').strip(),
+                '職稱': n.get('職稱', ''),
+                '薪俸': n.get('薪俸', 0), '專業加給': n.get('專業加給', 0),
+                '主管加給': n.get('主管加給', 0), '導師特教': n.get('導師特教', 0),
+                '應發金額': n.get('應發金額', 0),
+                '_次要': True, '_次要原因': n.get('_次要原因', ''),
+            })
+        need = [n for n in need if not n.get('_次要')]
 
         if need:
             with _ocr_lock:
@@ -737,8 +748,7 @@ def ocr_status(job_id):
                     _ocr_jobs[job_id]['status'] = 'need_review'
             return jsonify({
                 'status': 'need_review', 'success': True, 'job_id': job_id,
-                'auto_ok': len(good), 'need': need, 'excluded': dropped,
-                'school_key': skey, 'exclusions': ex,
+                'auto_ok': len(good), 'need': need, 'school_key': skey,
                 'af_names': sorted({a['姓名'] for a in af_records}),
                 'warnings': af_warns,
             })
@@ -747,8 +757,7 @@ def ocr_status(job_id):
         out.update({'status': 'done', 'success': True, 'mode': 'ocr',
                     'layout': '掃描圖檔（文字辨識）', 'af_count': len(af_records),
                     'pdf_count': len(good), 'warnings': af_warns,
-                    'excluded': dropped, 'school_key': skey, 'exclusions': ex,
-                    'counts': bump_counter('compares')})
+                    'school_key': skey, 'counts': bump_counter('compares')})
         with _ocr_lock:
             _ocr_jobs.pop(job_id, None)
         return jsonify(out)
