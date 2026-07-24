@@ -421,19 +421,21 @@ def compare_pdf():
 
     # ── 掃描圖檔 → 無法解析 ──
     if not paycheck.has_text_layer(pdf_bytes):
+        job_id = None
         if ocr_enabled():
-            jid = uuid.uuid4().hex[:12]
+            # 先保留檔案，使用者按下按鈕才真正送辨識（逾時自動清除）
+            job_id = uuid.uuid4().hex[:12]
             with _ocr_lock:
                 _ocr_gc()
-                _ocr_jobs[jid] = {'status': 'pending', 'created': time.time(),
-                                  'pdf': pdf_bytes, 'af': af_bytes, 'af_name': af_name,
-                                  'people': None, 'error': None}
-            return jsonify({'success': True, 'mode': 'ocr_pending', 'job_id': jid,
-                            'notice': '此份為掃描圖檔，已送交文字辨識，請稍候…'})
+                _ocr_jobs[job_id] = {'status': 'held', 'created': time.time(),
+                                     'pdf': pdf_bytes, 'af': af_bytes, 'af_name': af_name,
+                                     'people': None, 'error': None}
 
         return jsonify({
             'error': '此 PDF 為掃描圖檔，無法自動比對',
             'code': 'scanned',
+            'ocr_available': bool(job_id),
+            'job_id': job_id,
             'title': '這份 PDF 是掃描圖檔，無法比對',
             'why': '整份文件是一張張圖片，裡面沒有任何可讀取的文字資料，'
                    '系統無法取得薪俸、加給等金額。',
@@ -482,6 +484,20 @@ def compare_pdf():
 
     except Exception as e:
         return jsonify({'error': '比對錯誤：' + str(e)}), 500
+
+
+@app.route('/ocr/start/<job_id>', methods=['POST'])
+def ocr_start(job_id):
+    """使用者按下按鈕後，才將保留中的檔案送入辨識佇列"""
+    touch_active()
+    with _ocr_lock:
+        j = _ocr_jobs.get(job_id)
+        if not j:
+            return jsonify({'error': '檔案已逾時清除，請重新上傳'}), 404
+        if j['status'] == 'held':
+            j['status'] = 'pending'
+            j['created'] = time.time()
+    return jsonify({'ok': True, 'job_id': job_id})
 
 
 @app.route('/ocr/submit-fixed', methods=['POST'])
