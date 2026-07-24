@@ -440,7 +440,9 @@ def apply_exclusions(people, ex_titles=None, ex_names=None, use_default=True):
     for p in people:
         title = (p.get('職稱') or '').strip()
         head = title_head(title)
-        name = (p.get('姓名') or '').strip()
+        # 待確認的資料可能還沒有確定的姓名，依序取用可得的欄位
+        name = (p.get('姓名') or p.get('建議姓名')
+                or p.get('原始姓名') or '').strip()
 
         hit = next((t for t in ex_titles if t in head), None)
         if hit:
@@ -471,7 +473,8 @@ def title_observations(people, af_names):
             continue
         d = obs.setdefault(t, {'total': 0, 'in_af': 0})
         d['total'] += 1
-        if (p.get('姓名') or '').strip() in af_names:
+        nm = (p.get('姓名') or p.get('建議姓名') or p.get('原始姓名') or '').strip()
+        if nm in af_names:
             d['in_af'] += 1
     return obs
 
