@@ -617,13 +617,12 @@ def from_ocr(ocr_people, af_records):
         else:
             fixed, changed = fix_name(raw, known)
             name_ok = fixed in known
-            # 特殊字碼或 OCR 單字誤判：至少兩字同位置一致、四項金額全等，
-            # 且 AF 候選唯一時才採用。若有兩位候選則仍需人工確認。
+            # 特殊字碼或 OCR 單字誤判：至少兩字同位置一致、清冊驗算正確，
+            # 且 AF 姓名候選唯一時才採用。若有兩位候選仍需人工確認。
             if not name_ok and sum_ok:
-                amount_name = match_name_by_two_chars_and_amounts(
-                    raw, vals, af_records)
-                if amount_name:
-                    fixed, changed, name_ok = amount_name, True, True
+                close_name = match_name_by_two_chars(raw, af_records)
+                if close_name:
+                    fixed, changed, name_ok = close_name, True, True
 
         if name_ok and sum_ok:
             good.append({'姓名': fixed,
@@ -684,11 +683,11 @@ def fix_name(raw, known_names):
     return (m[0], True) if m else (raw, False)
 
 
-def match_name_by_two_chars_and_amounts(raw, vals, af_records):
+def match_name_by_two_chars(raw, af_records):
     """
     特殊字／OCR 單字誤判的保守回退：
-    姓名同長度且至少兩字在相同位置一致，四項金額與 AF 全等，
-    並且只得到一個姓名候選時才回傳 AF 的標準姓名。
+    姓名同長度且至少兩字在相同位置一致，並且只得到一個 AF 姓名候選時，
+    回傳 AF 的標準姓名。呼叫端另要求清冊四項加總與應發金額相符。
     """
     raw_key = _name_key(raw)
     if len(raw_key) < 3:
@@ -702,9 +701,7 @@ def match_name_by_two_chars_and_amounts(raw, vals, af_records):
         same = sum(a == b for a, b in zip(raw_key, af_key))
         if same < 2:
             continue
-        if all(_n(af.get(field, 0)) == _n(vals.get(field, 0))
-               for field in FIELDS):
-            candidates.add(af.get('姓名', ''))
+        candidates.add(af.get('姓名', ''))
 
     candidates.discard('')
     return next(iter(candidates)) if len(candidates) == 1 else ''
