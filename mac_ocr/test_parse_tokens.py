@@ -40,6 +40,15 @@ class HorizontalRowTests(unittest.TestCase):
         self.assertEqual(person['專業加給'], 35780)
         self.assertTrue(person['加總相符'])
 
+    def test_truncated_manager_title_keeps_manager_allowance(self):
+        person = self.parse(
+            ('導師兼主1650', .03), ('廖雅蘭', .11),
+            ('55690', .16), ('5930', .20), ('35780', .24),
+            ('4000', .28), ('101400', .37))
+        self.assertEqual(person['主管加給'], 5930)
+        self.assertEqual(person['導師特教'], 4000)
+        self.assertTrue(person['加總相符'])
+
     def test_teacher_allowance_after_professional(self):
         person = self.parse(
             ('導師', .03), ('350', .07), ('邱淑娟', .11),

@@ -583,10 +583,15 @@ def parse_horizontal_row(row):
         prof_i = next((i for i, v in enumerate(additions) if v >= 15000), None)
         if prof_i is not None:
             leading_duty_or_mgr = sum(additions[:prof_i])
-            if has_mgr:
-                mgr = leading_duty_or_mgr
-            else:
+            # 蔡文版面的特教職加為 2,800；真正主管加給則常見
+            # 4,320／5,930／10,010。職稱偶爾會被 OCR 截成「兼主1」，
+            # 因此除職稱外也保留金額判斷，避免把主管加給併入特教。
+            leading_is_special = (
+                leading_duty_or_mgr == 2800 or '資源班' in title)
+            if leading_is_special and not has_mgr:
                 duty = leading_duty_or_mgr
+            else:
+                mgr = leading_duty_or_mgr
             prof = additions[prof_i]
             duty += sum(additions[prof_i + 1:])
         elif '教保員' in title:
@@ -606,10 +611,11 @@ def parse_horizontal_row(row):
             and nums[idx + 1] >= 15000
         )
         if (has_mgr or small_before_prof) and idx < len(nums):
-            if has_mgr:
-                mgr = nums[idx]
-            else:
+            leading_is_special = nums[idx] == 2800 or '資源班' in title
+            if leading_is_special and not has_mgr:
                 duty = nums[idx]
+            else:
+                mgr = nums[idx]
             idx += 1
         prof = nums[idx] if idx < len(nums) else 0
         idx += 1

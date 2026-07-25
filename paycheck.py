@@ -610,7 +610,32 @@ def from_ocr(ocr_people, af_records):
         total = _n(p.get('應發金額', 0))
         s = sum(vals.values()) + other
         total_inferred = bool(p.get('應發金額推算'))
-        sum_ok = bool(total) and s == total and not total_inferred
+        # Apple Vision 偶爾會漏掉紙本小計，但仍完整讀到四個薪資項目。
+        # 僅在身分證可精確對應，或姓名至少兩字同位置一致，再加上 AF
+        # 四欄逐項完全相同且候選唯一、沒有 AF 無法核對的其他加給時，
+        # 才接受項目合計取代漏讀小計。任何歧義或金額不同仍人工確認。
+        raw_key = _name_key(raw)
+        if id_ok:
+            inferred_candidates = [by_id[pid]]
+        else:
+            inferred_candidates = []
+            if len(raw_key) >= 3:
+                for a in af_records:
+                    af_key = _name_key(a.get('姓名', ''))
+                    if len(af_key) != len(raw_key):
+                        continue
+                    if sum(x == y for x, y in zip(raw_key, af_key)) >= 2:
+                        inferred_candidates.append(a)
+        inferred_candidates = [
+            a for a in inferred_candidates
+            if all(vals[f] == _n(a.get(f, 0)) for f in FIELDS)
+        ]
+        inferred_confirmed_by_af = bool(
+            total_inferred and len(inferred_candidates) == 1
+            and not other and total and s == total
+        )
+        sum_ok = bool(total) and s == total and (
+            not total_inferred or inferred_confirmed_by_af)
         conf = p.get('最低信心')
 
         if id_ok:
@@ -639,7 +664,7 @@ def from_ocr(ocr_people, af_records):
             if pid and not p.get('身分證有效'):
                 reasons.append(f'身分證「{pid}」檢查碼不符，可能辨識錯誤')
             reasons.append(f'姓名「{raw or "空白"}」無法對應 AF 名單')
-        if total_inferred:
+        if total_inferred and not inferred_confirmed_by_af:
             reasons.append(
                 f'未讀到印列應發金額，暫以薪資項目合計 {total:,} 填入，請對照紙本確認')
         elif not total:
