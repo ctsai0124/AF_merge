@@ -697,9 +697,16 @@ function revCheck(i) {
 }
 
 async function submitReview() {
-  const rows = revRows.filter(r => !r._排除)
-                      .filter(r => (r['姓名'] || r['建議姓名'] || '').trim())
-                      .map(r => ({...r, 姓名: (r['姓名'] || r['建議姓名'] || '').trim()}));
+  // 排除的列仍然送出，標記為 _次要=true，後端會把他們放進收合區而非直接丟棄。
+  // 這樣使用者按「排除」後，那筆仍會出現在「另有 N 人未列入本次稽核」，不會消失。
+  const rows = revRows
+    .filter(r => (r['姓名'] || r['建議姓名'] || '').trim())
+    .map(r => ({
+      ...r,
+      姓名: (r['姓名'] || r['建議姓名'] || '').trim(),
+      _次要: r._排除 ? true : undefined,
+      _次要原因: r._排除 ? '人工確認時排除' : undefined,
+    }));
   document.getElementById('cmp-loader').style.display = 'flex';
   try {
     const res = await fetch('/ocr/submit-fixed', {
