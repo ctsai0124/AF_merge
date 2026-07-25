@@ -49,6 +49,19 @@ class HorizontalRowTests(unittest.TestCase):
         self.assertEqual(person['導師特教'], 4000)
         self.assertTrue(person['加總相符'])
 
+    def test_fallback_keeps_small_special_allowance_before_professional(self):
+        # 模擬導師加給漏讀，前綴和因而無法辨識；其餘欄位仍不可左移。
+        person = self.parse(
+            ('資源班', .03), ('245', .07), ('洪一茜', .11),
+            ('29270', .16), ('2800', .20), ('26560', .24),
+            ('62630', .37))
+        self.assertEqual(person['姓名'], '洪一茜')
+        self.assertEqual(person['主管加給'], 2800)
+        self.assertEqual(person['專業加給'], 26560)
+        self.assertEqual(person['導師特教'], 0)
+        self.assertEqual(person['應發金額'], 62630)
+        self.assertEqual(person['加總差額'], 4000)
+
     def test_childcare_allowance_is_other(self):
         person = self.parse(
             ('教保員', .03), ('學士', .07), ('蕭惠心', .11),

@@ -591,7 +591,14 @@ def parse_horizontal_row(row):
     else:
         # 舊版面沒有可辨識的小計時，保留原有順序解析作為備援。
         idx = 1
-        if has_mgr and idx < len(nums):
+        # 主管／特殊職務加給通常低於 15,000，且位於至少 15,000 的
+        # 專業加給之前。即使職稱不是主任（例如資源班），也應照欄序讀取。
+        small_before_prof = (
+            idx + 1 < len(nums)
+            and 0 <= nums[idx] < 15000
+            and nums[idx + 1] >= 15000
+        )
+        if (has_mgr or small_before_prof) and idx < len(nums):
             mgr = nums[idx]; idx += 1
         prof = nums[idx] if idx < len(nums) else 0
         idx += 1
