@@ -606,8 +606,9 @@ def from_ocr(ocr_people, af_records):
             '主管加給': _n(p.get('主管加給', 0)),
             '導師特教': _n(p.get('導師特教', 0)),
         }
+        other = _n(p.get('其他加給', 0))
         total = _n(p.get('應發金額', 0))
-        s = sum(vals.values())
+        s = sum(vals.values()) + other
         sum_ok = bool(total) and s == total
         conf = p.get('最低信心')
 
@@ -628,7 +629,8 @@ def from_ocr(ocr_people, af_records):
             good.append({'姓名': fixed,
                          '職稱': re.sub(r'^\d+\s*', '', p.get('職稱', '')).strip(),
                          '身分證': pid if id_ok else '',
-                         '應發金額': total, '_ocr_name_fixed': changed, **vals})
+                         '應發金額': total, '其他加給': other,
+                         '_ocr_name_fixed': changed, **vals})
             continue
 
         reasons = []
@@ -639,7 +641,7 @@ def from_ocr(ocr_people, af_records):
         if not total:
             reasons.append('未讀到應發金額，無法驗算')
         elif not sum_ok:
-            reasons.append(f'四項相加 {s:,} 與應發金額 {total:,} 不符（差 {total - s:+,}）')
+            reasons.append(f'薪資項目相加 {s:,} 與應發金額 {total:,} 不符（差 {total - s:+,}）')
         if conf is not None and conf < 0.5:
             reasons.append(f'辨識信心偏低（{conf}）')
 
@@ -648,6 +650,7 @@ def from_ocr(ocr_people, af_records):
             '職稱': re.sub(r'^\d+\s*', '', p.get('職稱', '')).strip(),
             '身分證': pid, '應發金額': total, '原因': reasons,
             '姓名可疑': not name_ok, '金額可疑': not sum_ok,
+            '其他加給': other,
             **vals,
         })
 
@@ -665,6 +668,7 @@ def compare_with_fixed(good, fixed_rows, af_records):
             '姓名': name, '職稱': r.get('職稱', ''),
             '薪俸': _n(r.get('薪俸', 0)), '專業加給': _n(r.get('專業加給', 0)),
             '主管加給': _n(r.get('主管加給', 0)), '導師特教': _n(r.get('導師特教', 0)),
+            '其他加給': _n(r.get('其他加給', 0)),
             '應發金額': _n(r.get('應發金額', 0)), '_user_fixed': True,
         })
     return compare(merged, af_records)

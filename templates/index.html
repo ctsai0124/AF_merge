@@ -380,7 +380,7 @@ tbody td.name-col{text-align:left;font-weight:600}
 
 </div>
 
-<div class="footer">本系統僅供內部作業使用，請勿將資料外傳。｜版本 2026.07.25.3</div>
+<div class="footer">本系統僅供內部作業使用，請勿將資料外傳。｜版本 2026.07.25.6</div>
 
 <script>
 const files = {roster: null, af: null, pdf: null};
@@ -576,7 +576,7 @@ async function pollOCR(jobId, notice) {
 }
 
 /* ── OCR 結果人工確認 ── */
-const REV_F = ['薪俸','專業加給','主管加給','導師特教'];
+const REV_F = ['薪俸','專業加給','主管加給','導師特教','其他加給'];
 let revRows = [], revJob = null;
 
 function renderReview(d) {
@@ -586,7 +586,7 @@ function renderReview(d) {
     + '<span class="tag">' + d.auto_ok + ' 筆已自動通過</span></h4>'
     + '<div class="why">下列資料的文字辨識結果不夠可靠。'
     + '欄位已填入辨識到的數值，<b>請對照紙本清冊確認</b>，紅框處特別需要留意。<br>'
-    + '四項相加等於應發金額時，該列會轉為綠色。</div>';
+    + '各項相加等於應發金額時，該列會轉為綠色。</div>';
 
   // 後端只提供可安全整類排除的非正式職稱；正式職稱永遠不顯示此選項。
   const titles = d.exclude_title_options || [];
@@ -603,7 +603,7 @@ function renderReview(d) {
   }
 
   h += '<table class="rev-tbl"><thead><tr><th>姓名</th><th>職稱</th>'
-     + '<th>薪俸</th><th>專業加給</th><th>職務加給</th><th>導師＋特教</th>'
+     + '<th>薪俸</th><th>專業加給</th><th>職務加給</th><th>導師＋特教</th><th>其他加給</th>'
      + '<th>應發金額</th><th>驗算</th><th>操作</th></tr></thead><tbody>';
 
   d.need.forEach((r, i) => {
@@ -615,13 +615,13 @@ function renderReview(d) {
        + '<td style="font-size:11px;color:#666">' + esc(r['職稱'] || '') + '</td>';
     REV_F.forEach(f => {
       h += '<td><input data-i="' + i + '" data-f="' + f + '" class="' + ms
-         + '" value="' + r[f] + '" oninput="onRev(this)"></td>';
+         + '" value="' + (r[f] || 0) + '" oninput="onRev(this)"></td>';
     });
     h += '<td><input data-i="' + i + '" data-f="應發金額" class="' + ms
        + '" value="' + r['應發金額'] + '" oninput="onRev(this)"></td>'
        + '<td class="rev-chk" id="rc' + i + '">—</td>'
        + '<td><button class="btn-x" onclick="dropRow(' + i + ')" id="bx' + i + '">排除</button></td></tr>'
-       + '<tr><td colspan="9" class="rev-why">↳ '
+       + '<tr><td colspan="10" class="rev-why">↳ '
        + (r['原因'] || []).map(esc).join('；') + '</td></tr>';
   });
   h += '</tbody></table>';

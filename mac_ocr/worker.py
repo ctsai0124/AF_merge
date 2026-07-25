@@ -7,6 +7,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CFG = json.load(open(os.path.join(HERE, 'config.json'), encoding='utf-8'))
 SERVER, KEY = CFG['server'].rstrip('/'), CFG['key']
 POLL_MIN, POLL_MAX = 3, 60
+WORKER_VERSION = 'v9'
 
 sys.path.insert(0, HERE)
 from parse_tokens import (
@@ -87,7 +88,7 @@ def ocr(pdf_bytes, preferred_layout=None, job_id=''):
         too_few_for_pages = page_count >= 3 and len(people) < page_count * 2
         abnormal = (
             not people
-            or ok < len(people) * 0.5
+            or ok < len(people) * 0.9
             or suspicious >= max(2, len(people) * 0.1)
             or too_few_for_pages
         )
@@ -102,7 +103,7 @@ def ocr(pdf_bytes, preferred_layout=None, job_id=''):
 
 
 def main():
-    print(f'OCR 工作程式啟動｜伺服器 {SERVER}', flush=True)
+    print(f'OCR 工作程式啟動 {WORKER_VERSION}｜伺服器 {SERVER}', flush=True)
     while True:
         resp = req('/ocr/claim')
         if resp is None:

@@ -15,7 +15,9 @@ X_TOL = 0.035          # 直式版面中，token 歸屬欄位的 x 容差
 
 MGR_WORDS = ('校長', '主任', '組長')
 TITLE_WORDS = ('校長', '主任', '組長', '教師', '幹事', '校護', '工友', '技工',
-               '駕駛', '護理師', '代理教師', '編號', '職稱', '導師', '科任')
+               '駕駛', '護理師', '代理教師', '編號', '職稱', '導師', '科任',
+               '教保員', '幼師', '教練', '資源班', '暫代', '長代', '借調',
+               '輔導教師', '學士')
 # 僅列出「不可能出現在職稱中」的字詞，避免誤跳過真正的人員。
 # 例：「總務主任」「人事主任」「會計主任」「出納組長」都是實際職稱，不可過濾。
 SKIP_WORDS = ('小計', '合計', '總計', '備註', '製表', '用印', '機關首長',
@@ -514,12 +516,46 @@ def parse_horizontal_row(row):
 
     pid = next((s.strip().upper() for s in texts if looks_like_id(s)), '')
 
-    name_i = next((i for i, s in enumerate(texts) if is_name(s)), None)
+    # 橫式報表常是「職別｜薪點｜姓名｜月俸額」。資源班、暫代、專任教練
+    # 等職別本身也像中文姓名，若一律取第一個 2～4 字中文 token，整列就會
+    # 從職別開始錯位。優先找薪點右側、且右邊緊接大額月俸的姓名；另保留
+    # 「姓名｜薪點｜月俸」版面的向左備援。
+    name_candidates = [
+        i for i, s in enumerate(texts)
+        if is_name(s) and not _suspicious_name(s)
+    ]
+    point_indexes = [
+        i for i, s in enumerate(texts)
+        if is_num(s) and 0 < abs(to_int(s)) < 1000
+    ]
+
+    def has_pay_after(i):
+        return any(is_num(texts[j]) and abs(to_int(texts[j])) >= 10000
+                   for j in range(i + 1, min(len(texts), i + 5)))
+
+    name_i = None
+    for pi in point_indexes:
+        right = [i for i in name_candidates
+                 if i > pi and row[i]['x'] - row[pi]['x'] <= 0.11
+                 and has_pay_after(i)]
+        if right:
+            name_i = min(right, key=lambda i: row[i]['x'] - row[pi]['x'])
+            break
+    if name_i is None:
+        for pi in point_indexes:
+            left = [i for i in name_candidates
+                    if i < pi and row[pi]['x'] - row[i]['x'] <= 0.11
+                    and has_pay_after(pi)]
+            if left:
+                name_i = min(left, key=lambda i: row[pi]['x'] - row[i]['x'])
+                break
+    if name_i is None:
+        name_i = name_candidates[0] if name_candidates else None
     if name_i is None:
         return None
     name = texts[name_i]
 
-    title = ' '.join(texts[:name_i])
+    title = ' '.join(s for s in texts[:name_i] if not is_num(s))
     has_mgr = any(w in title for w in MGR_WORDS)
 
     nums = [to_int(s) for s in texts[name_i + 1:] if is_num(s)]
@@ -528,23 +564,47 @@ def parse_horizontal_row(row):
     if len(nums) < 2:
         return None
 
-    idx = 0
-    pay = nums[idx]; idx += 1
-    mgr = 0
-    if has_mgr and idx < len(nums):
-        mgr = nums[idx]; idx += 1
-    prof = nums[idx] if idx < len(nums) else 0
-    idx += 1
-    duty = 0
-    if idx < len(nums) and 0 < nums[idx] < 20000:
-        duty = nums[idx]; idx += 1
-    total = nums[idx] if idx < len(nums) else 0
+    pay, mgr, prof, duty, other, total = nums[0], 0, 0, 0, 0, 0
 
-    s = pay + mgr + prof + duty
+    # 薪資區最後有一個「小計」，必定等於月俸＋前方各項加給。
+    # 找最早成立的前綴和即可切開後方保險、扣款欄，不依賴職稱猜空白欄。
+    total_i = next(
+        (i for i in range(2, min(len(nums), 7))
+         if nums[i] >= pay and nums[i] == sum(nums[:i])),
+        None)
+    if total_i is not None:
+        total = nums[total_i]
+        additions = nums[1:total_i]
+        # 此類報表欄序固定為：主管／特殊職務、專業、導師／特教、其他。
+        # 專業加給通常是第一個至少 15,000 元的加給，可作為分界。
+        prof_i = next((i for i, v in enumerate(additions) if v >= 15000), None)
+        if prof_i is not None:
+            mgr = sum(additions[:prof_i])
+            prof = additions[prof_i]
+            duty = sum(additions[prof_i + 1:])
+        elif '教保員' in title:
+            other = sum(additions)
+        elif additions:
+            # 沒有專業加給的少數人員，保留在「其他加給」參與驗算，
+            # 不硬塞入 AF 的四個比對欄位。
+            other = sum(additions)
+    else:
+        # 舊版面沒有可辨識的小計時，保留原有順序解析作為備援。
+        idx = 1
+        if has_mgr and idx < len(nums):
+            mgr = nums[idx]; idx += 1
+        prof = nums[idx] if idx < len(nums) else 0
+        idx += 1
+        if idx < len(nums) and 0 < nums[idx] < 20000:
+            duty = nums[idx]; idx += 1
+        total = nums[idx] if idx < len(nums) else 0
+
+    s = pay + mgr + prof + duty + other
     return {
         '姓名': name, '職稱': title.strip(),
         '身分證': pid, '身分證有效': valid_id(pid),
         '薪俸': pay, '主管加給': mgr, '專業加給': prof, '導師特教': duty,
+        '其他加給': other,
         '應發金額': total,
         '加總相符': (total > 0 and s == total),
         '加總差額': (total - s) if total else None,
