@@ -25,9 +25,9 @@ class HorizontalRowTests(unittest.TestCase):
             ('55690', .16), ('2800', .20), ('35780', .24),
             ('4000', .28), ('98270', .37), ('2614', .42))
         self.assertEqual(person['姓名'], '裴淑茵')
-        self.assertEqual(person['主管加給'], 2800)
+        self.assertEqual(person['主管加給'], 0)
         self.assertEqual(person['專業加給'], 35780)
-        self.assertEqual(person['導師特教'], 4000)
+        self.assertEqual(person['導師特教'], 6800)
         self.assertTrue(person['加總相符'])
 
     def test_manager_row(self):
@@ -56,9 +56,9 @@ class HorizontalRowTests(unittest.TestCase):
             ('29270', .16), ('2800', .20), ('26560', .24),
             ('62630', .37))
         self.assertEqual(person['姓名'], '洪一茜')
-        self.assertEqual(person['主管加給'], 2800)
+        self.assertEqual(person['主管加給'], 0)
         self.assertEqual(person['專業加給'], 26560)
-        self.assertEqual(person['導師特教'], 0)
+        self.assertEqual(person['導師特教'], 2800)
         self.assertEqual(person['應發金額'], 62630)
         self.assertFalse(person['應發金額推算'])
         self.assertEqual(person['加總差額'], 4000)
@@ -68,12 +68,23 @@ class HorizontalRowTests(unittest.TestCase):
             ('資源班', .03), ('245', .07), ('洪一茜', .11),
             ('29270', .16), ('2800', .20), ('26560', .24),
             ('4000', .28), ('3107', .42))
-        self.assertEqual(person['主管加給'], 2800)
+        self.assertEqual(person['主管加給'], 0)
         self.assertEqual(person['專業加給'], 26560)
-        self.assertEqual(person['導師特教'], 4000)
+        self.assertEqual(person['導師特教'], 6800)
         self.assertEqual(person['應發金額'], 62630)
         self.assertTrue(person['應發金額推算'])
         self.assertFalse(person['加總相符'])
+
+    def test_special_and_teacher_allowance_merge_for_af(self):
+        person = self.parse(
+            ('資源班', .03), ('245', .07), ('洪一茜', .11),
+            ('29270', .16), ('2800', .20), ('26560', .24),
+            ('4000', .28), ('62630', .37), ('3107', .42))
+        self.assertEqual(person['主管加給'], 0)
+        self.assertEqual(person['導師特教'], 6800)
+        self.assertEqual(person['應發金額'], 62630)
+        self.assertFalse(person['應發金額推算'])
+        self.assertTrue(person['加總相符'])
 
     def test_childcare_allowance_is_other(self):
         person = self.parse(

@@ -576,13 +576,19 @@ def parse_horizontal_row(row):
     if total_i is not None:
         total = nums[total_i]
         additions = nums[1:total_i]
-        # 此類報表欄序固定為：主管／特殊職務、專業、導師／特教、其他。
+        # 此類報表的第一個小額欄是「主管加給／特教職加」共用欄：
+        # 主管職才歸主管加給，非主管（例如資源班）則須與後方導師費
+        # 合併到 AF 的「導師＋特教」。
         # 專業加給通常是第一個至少 15,000 元的加給，可作為分界。
         prof_i = next((i for i, v in enumerate(additions) if v >= 15000), None)
         if prof_i is not None:
-            mgr = sum(additions[:prof_i])
+            leading_duty_or_mgr = sum(additions[:prof_i])
+            if has_mgr:
+                mgr = leading_duty_or_mgr
+            else:
+                duty = leading_duty_or_mgr
             prof = additions[prof_i]
-            duty = sum(additions[prof_i + 1:])
+            duty += sum(additions[prof_i + 1:])
         elif '教保員' in title:
             other = sum(additions)
         elif additions:
@@ -600,11 +606,15 @@ def parse_horizontal_row(row):
             and nums[idx + 1] >= 15000
         )
         if (has_mgr or small_before_prof) and idx < len(nums):
-            mgr = nums[idx]; idx += 1
+            if has_mgr:
+                mgr = nums[idx]
+            else:
+                duty = nums[idx]
+            idx += 1
         prof = nums[idx] if idx < len(nums) else 0
         idx += 1
         if idx < len(nums) and 0 < nums[idx] < 20000:
-            duty = nums[idx]; idx += 1
+            duty += nums[idx]; idx += 1
         total_candidate = nums[idx] if idx < len(nums) else 0
         # 小計不可能小於月俸；若下一個數字已落入保險／扣款區（例如 3,107），
         # 不能冒充應發金額。暫填薪資項目合計供人工核對，但標記為推算，
