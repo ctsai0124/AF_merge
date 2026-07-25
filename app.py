@@ -122,6 +122,62 @@ def school_key(af_name):
     return sn1 or (af_name or '_default')
 
 
+# ── OCR 版面記憶（依學校保存，不含任何薪資或個資）──────────
+_layout_lock = threading.Lock()
+
+
+def _layout_file():
+    base = os.environ.get('DATA_DIR', '').strip() or app.root_path
+    try:
+        os.makedirs(base, exist_ok=True)
+    except Exception:
+        base = tempfile.gettempdir()
+    return os.path.join(base, 'layout_profiles.json')
+
+
+def load_layout_profile(school=''):
+    try:
+        with open(_layout_file(), encoding='utf-8') as f:
+            d = json.load(f)
+    except Exception:
+        d = {}
+    p = d.get(school or '_default', {})
+    layout = p.get('layout')
+    if layout not in ('vertical', 'horizontal'):
+        layout = None
+    return {
+        'layout': layout,
+        'samples': int(p.get('samples', 0) or 0),
+        'name_match_rate': float(p.get('name_match_rate', 0) or 0),
+        'updated_at': int(p.get('updated_at', 0) or 0),
+    }
+
+
+def save_layout_profile(school, layout, name_match_rate):
+    """只在 OCR 姓名經 AF 驗證後，記住該校成功使用的版面。"""
+    if not school or layout not in ('vertical', 'horizontal'):
+        return None
+    with _layout_lock:
+        try:
+            with open(_layout_file(), encoding='utf-8') as f:
+                d = json.load(f)
+        except Exception:
+            d = {}
+        prev = d.get(school, {})
+        d[school] = {
+            'layout': layout,
+            'samples': int(prev.get('samples', 0) or 0) + 1,
+            'name_match_rate': round(float(name_match_rate), 3),
+            'updated_at': int(time.time()),
+        }
+        try:
+            with open(_layout_file(), 'w', encoding='utf-8') as f:
+                json.dump(d, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            app.logger.warning(f'OCR 版面設定寫入失敗：{e}')
+        return d[school]
+
+
 # ── 職稱觀察統計（跨檔案累積，用於建議排除）────────────────
 _stats_lock = threading.Lock()
 
@@ -517,7 +573,8 @@ def compare_pdf():
                 _ocr_gc()
                 _ocr_jobs[job_id] = {'status': 'held', 'created': time.time(),
                                      'pdf': pdf_bytes, 'af': af_bytes, 'af_name': af_name,
-                                     'people': None, 'error': None}
+                                     'school_key': school_key(af_name),
+                                     'people': None, 'layout': None, 'error': None}
 
         return jsonify({
             'error': '此 PDF 為掃描圖檔，無法自動比對',
@@ -667,8 +724,12 @@ def ocr_claim():
         for jid, j in _ocr_jobs.items():
             if j['status'] == 'pending':
                 j['status'] = 'processing'
+                skey = j.get('school_key') or school_key(j.get('af_name', ''))
+                profile = load_layout_profile(skey)
                 return jsonify({'job_id': jid,
                                 'pdf_b64': base64.b64encode(j['pdf']).decode(),
+                                'school_key': skey,
+                                'layout_hint': profile.get('layout'),
                                 'next_poll': POLL_ACTIVE})
     return jsonify({'job_id': None, 'next_poll': next_poll_sec()})
 
@@ -690,6 +751,8 @@ def ocr_result():
         else:
             j['status'] = 'done'
             j['people'] = d.get('people') or []
+            layout = d.get('layout')
+            j['layout'] = layout if layout in ('vertical', 'horizontal') else None
     return jsonify({'ok': True})
 
 
@@ -701,6 +764,7 @@ def ocr_status(job_id):
         if not j:
             return jsonify({'status': 'expired'}), 404
         st, people, err = j['status'], j['people'], j['error']
+        layout = j.get('layout')
         af_bytes, af_name = j['af'], j['af_name']
 
     if st == 'need_review':
@@ -723,6 +787,23 @@ def ocr_status(job_id):
         skey = school_key(af_name)
         ex = load_exclusions(skey)
         good, need = paycheck.from_ocr(people, af_records)
+
+        # 用 AF 的「姓名完全相符或有效身分證」驗證 Mac 選出的版面。
+        # 不採模糊姓名，避免錯誤候選反過來污染該校的版面記憶。
+        # 正式人員只占全校名冊的一部分，因此門檻採 50%。
+        af_names = {(a.get('姓名') or '').strip() for a in af_records}
+        af_ids = {(a.get('身分證') or '').strip().upper() for a in af_records
+                  if (a.get('身分證') or '').strip()}
+        name_matches = sum(
+            1 for p in people
+            if (p.get('姓名') or '').strip() in af_names
+            or (bool(p.get('身分證有效'))
+                and (p.get('身分證') or '').strip().upper() in af_ids)
+        )
+        name_match_rate = name_matches / len(people) if people else 0
+        if layout and len(people) >= 3 and name_match_rate >= 0.5:
+            save_layout_profile(skey, layout, name_match_rate)
+
         af_names_set = {a['姓名'] for a in af_records}
         stats = merge_title_stats(paycheck.title_observations(good + need, af_names_set))
         learned, _ = paycheck.learned_suggestions(stats)

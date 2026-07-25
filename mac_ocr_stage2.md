@@ -91,12 +91,17 @@ Mac 主動輪詢伺服器，**不需要固定 IP、不開放任何連接埠**。
       ↓
 伺服器建立工作，狀態「等待辨識」
       ↓
-Mac 每 5 秒詢問一次 → 領到工作 → 下載 PDF
+Mac 依伺服器 next_poll 輪詢 → 領到工作與該校版面提示 → 下載 PDF
       ↓
-Vision 辨識 → 解析 → 回傳結果
+Vision 辨識 → 同時評估直式／橫式 → 回傳結果與實際版面
       ↓
-伺服器接續比對 → 前端顯示結果
+伺服器用 AF 姓名／身分證驗證 → 記住該校成功版面 → 前端顯示結果
 ```
+
+版面設定儲存在 Zeabur Volume 的 `/data/layout_profiles.json`，只包含
+學校機關代碼、`vertical`／`horizontal`、驗證比例與更新時間，不含姓名、
+身分證或薪資。舊設定只是優先提示；若學校更換報表格式，Mac 仍會比較兩種
+解析結果並自動改用較合理者。
 
 ### 需要的設定值
 
@@ -125,7 +130,7 @@ SERVER, KEY = CFG['server'].rstrip('/'), CFG['key']
 POLL_MIN, POLL_MAX = 3, 60      # 實際間隔由伺服器決定，此為安全範圍
 
 sys.path.insert(0, HERE)
-from parse_tokens import group_rows, parse_row      # 沿用第一階段的解析
+from parse_tokens import parse_tokens as parse_all
 
 
 def req(path, data=None, timeout=30):
@@ -148,7 +153,7 @@ def req(path, data=None, timeout=30):
         return None
 
 
-def ocr(pdf_bytes):
+def ocr(pdf_bytes, preferred_layout=None):
     """呼叫 Vision 辨識，回傳解析後的人員清單"""
     with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as f:
         f.write(pdf_bytes)
@@ -160,8 +165,9 @@ def ocr(pdf_bytes):
         if out.returncode != 0:
             raise RuntimeError(out.stderr.decode()[:300])
         tokens = json.loads(out.stdout)
-        people = [p for p in (parse_row(r) for r in group_rows(tokens)) if p]
-        return people
+        people, layout = parse_all(tokens, preferred_layout=preferred_layout)
+        print(f'  版面判定：{layout}', flush=True)
+        return people, layout
     finally:
         os.unlink(path)
 
@@ -187,13 +193,15 @@ def main():
             continue
 
         jid = resp['job_id']
+        preferred = resp.get('layout_hint')
         job = resp
-        print(f'領到工作 {jid}', flush=True)
+        hint_text = f'（該校記憶：{preferred}）' if preferred else ''
+        print(f'領到工作 {jid}{hint_text}', flush=True)
         try:
-            people = ocr(base64.b64decode(job['pdf_b64']))
+            people, layout = ocr(base64.b64decode(job['pdf_b64']), preferred)
             ok = sum(1 for p in people if p['加總相符'])
             print(f'  解析 {len(people)} 人，加總相符 {ok}', flush=True)
-            req('/ocr/result', {'job_id': jid, 'people': people})
+            req('/ocr/result', {'job_id': jid, 'people': people, 'layout': layout})
         except Exception as e:
             print(f'  辨識失敗：{e}', flush=True)
             req('/ocr/result', {'job_id': jid, 'error': str(e)[:300]})
@@ -246,15 +254,19 @@ python3 worker.py
 
 **請把 `你的帳號` 換成實際使用者名稱**（用 `whoami` 查詢）。
 
-載入與確認：
+載入與確認（新版 macOS）：
 
 ```bash
-launchctl load ~/Library/LaunchAgents/com.payroll.ocr.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.payroll.ocr.plist
 launchctl list | grep payroll          # 應出現該項目
 tail -f ~/payroll-ocr/worker.log       # 確認有啟動訊息
 ```
 
-停用：`launchctl unload ~/Library/LaunchAgents/com.payroll.ocr.plist`
+停用：
+
+```bash
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.payroll.ocr.plist
+```
 
 ### 5. 電源設定
 
