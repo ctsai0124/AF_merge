@@ -693,12 +693,18 @@ def compare_with_fixed(good, fixed_rows, af_records):
         name = (r.get('姓名') or '').strip()
         if not name:
             continue
+        # _次要=True 代表使用者在人工確認畫面按了「排除」。
+        # 保留這個標記讓 compare() 把她放進收合區，而非直接丟棄，
+        # 避免使用者誤以為少了一個人。
+        is_sub = bool(r.get('_次要'))
         merged.append({
             '姓名': name, '職稱': r.get('職稱', ''),
             '薪俸': _n(r.get('薪俸', 0)), '專業加給': _n(r.get('專業加給', 0)),
             '主管加給': _n(r.get('主管加給', 0)), '導師特教': _n(r.get('導師特教', 0)),
             '其他加給': _n(r.get('其他加給', 0)),
             '應發金額': _n(r.get('應發金額', 0)), '_user_fixed': True,
+            '_次要': is_sub,
+            '_次要原因': (r.get('_次要原因') or '人工確認時排除') if is_sub else '',
         })
     return compare(merged, af_records)
 
