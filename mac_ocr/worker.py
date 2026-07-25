@@ -9,7 +9,14 @@ SERVER, KEY = CFG['server'].rstrip('/'), CFG['key']
 POLL_MIN, POLL_MAX = 3, 60
 
 sys.path.insert(0, HERE)
-from parse_tokens import parse_tokens as parse_all
+from parse_tokens import (
+    parse_tokens as parse_all,
+    layout_diagnostics,
+    _suspicious_name,
+)
+
+DIAG_DIR = os.path.join(HERE, 'diagnostics')
+DIAG_KEEP = 10
 
 
 def req(path, data=None, timeout=60):
@@ -32,22 +39,66 @@ def req(path, data=None, timeout=60):
         return None
 
 
-def ocr(pdf_bytes, preferred_layout=None):
+def save_diagnostics(tokens, job_id, layout):
+    """保存異常工作的原始 token；最多保留 10 份，檔名不含學校或個資。"""
+    os.makedirs(DIAG_DIR, mode=0o700, exist_ok=True)
+    try:
+        os.chmod(DIAG_DIR, 0o700)
+    except OSError:
+        pass
+    safe_jid = ''.join(c for c in (job_id or 'unknown') if c.isalnum())[:20]
+    stamp = time.strftime('%Y%m%d-%H%M%S')
+    path = os.path.join(DIAG_DIR, f'{stamp}_{safe_jid}_{layout}.json')
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(tokens, f, ensure_ascii=False)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+    files = sorted(
+        (os.path.join(DIAG_DIR, n) for n in os.listdir(DIAG_DIR)
+         if n.endswith('.json')),
+        key=os.path.getmtime)
+    for old in files[:-DIAG_KEEP]:
+        try:
+            os.unlink(old)
+        except OSError:
+            pass
+    return path
+
+
+def ocr(pdf_bytes, preferred_layout=None, job_id=''):
     with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as f:
         f.write(pdf_bytes)
-        path = f.name
+        pdf_path = f.name
     try:
         out = subprocess.run(
-            ['swift', os.path.join(HERE, 'ocr_extract.swift'), path],
+            ['swift', os.path.join(HERE, 'ocr_extract.swift'), pdf_path],
             capture_output=True, timeout=300)
         if out.returncode != 0:
             raise RuntimeError(out.stderr.decode()[:300])
         tokens = json.loads(out.stdout)
         people, layout = parse_all(tokens, preferred_layout=preferred_layout)
         print(f'  版面判定：{layout}', flush=True)
+        ok = sum(1 for p in people if p.get('加總相符'))
+        suspicious = sum(1 for p in people if _suspicious_name(p.get('姓名')))
+        page_count = len({t.get('page') for t in tokens})
+        too_few_for_pages = page_count >= 3 and len(people) < page_count * 2
+        abnormal = (
+            not people
+            or ok < len(people) * 0.5
+            or suspicious >= max(2, len(people) * 0.1)
+            or too_few_for_pages
+        )
+        if abnormal:
+            diag_path = save_diagnostics(tokens, job_id, layout)
+            summary = layout_diagnostics(tokens)
+            print(f'  ⚠ 已保存診斷：{diag_path}', flush=True)
+            print(f'  雙版面診斷：{summary}', flush=True)
         return people, layout
     finally:
-        os.unlink(path)
+        os.unlink(pdf_path)
 
 
 def main():
@@ -68,7 +119,8 @@ def main():
         hint_text = f'（該校記憶：{preferred}）' if preferred else ''
         print(f'領到工作 {jid}{hint_text}', flush=True)
         try:
-            people, layout = ocr(base64.b64decode(resp['pdf_b64']), preferred)
+            people, layout = ocr(
+                base64.b64decode(resp['pdf_b64']), preferred, jid)
             ok = sum(1 for p in people if p['加總相符'])
             print(f'  解析 {len(people)} 人，加總相符 {ok}', flush=True)
             req('/ocr/result', {'job_id': jid, 'people': people, 'layout': layout})

@@ -63,7 +63,13 @@ for pi in 0..<doc.pageCount {
     guard let page = doc.page(at: pi) else { continue }
     let rect = page.bounds(for: .mediaBox)
     let scale: CGFloat = 3.0
-    let size = NSSize(width: rect.width * scale, height: rect.height * scale)
+    // PDFPage.draw 會套用頁面的 /Rotate，但 bounds(for:) 回傳的是尚未旋轉的
+    // MediaBox。90°／270°頁面若仍建立橫向畫布，旋轉後的直向內容會被裁掉。
+    let rotation = ((page.rotation % 360) + 360) % 360
+    let quarterTurn = rotation == 90 || rotation == 270
+    let displayWidth = quarterTurn ? rect.height : rect.width
+    let displayHeight = quarterTurn ? rect.width : rect.height
+    let size = NSSize(width: displayWidth * scale, height: displayHeight * scale)
 
     let img = NSImage(size: size)
     img.lockFocus()

@@ -84,7 +84,16 @@ def norm_text(s):
 
 
 def is_num(s):
-    return bool(re.fullmatch(r'-?[\d,]+[._,\-/|]*', norm_text(s)))
+    # 掃描 OCR 常在金額前後黏到框線、括號或一個近似直線的英文字元。
+    # 只容許有限的邊緣雜訊，而且逗號必須符合千分位格式。
+    # 例如「4,0001」通常是右側框線被讀成 1；不能直接去掉逗號變成 40001。
+    match = re.fullmatch(
+        r'[~～LlI|<>＜＞]*(-?[\d,]+?)[._,\-/|()（）\[\]［］{}]*',
+        norm_text(s))
+    if not match:
+        return False
+    core = match.group(1).lstrip('-')
+    return core.isdigit() or bool(re.fullmatch(r'\d{1,3}(?:,\d{3})+', core))
 
 
 def to_int(s):
@@ -105,6 +114,38 @@ def is_name(s):
     return not any(w in s for w in TITLE_WORDS)
 
 
+def repair_trailing_gridline_digit(row):
+    """
+    修復金額右框線被 Vision 黏成尾端「1」的極窄案例。
+
+    只在下列證據同時成立時修復，不使用加總或應發金額反推：
+    1. 原字串是千分位後多一個 1（例：4,0001）；
+    2. OCR 信心不高於 0.35；
+    3. 同一列至少另有兩格完全相同的合法基準值（例：4,000）；
+    4. 異常 token 的字框寬度與基準值中位數相差不超過 12%。
+    """
+    for token in row:
+        raw = norm_text(token.get('text', ''))
+        match = re.fullmatch(r'(\d{1,3},\d{3})1', raw)
+        if not match or float(token.get('conf', 1.0)) > 0.35:
+            continue
+
+        base = match.group(1)
+        peers = [
+            other for other in row
+            if other is not token and norm_text(other.get('text', '')) == base
+            and float(other.get('w', 0)) > 0
+        ]
+        if len(peers) < 2 or float(token.get('w', 0)) <= 0:
+            continue
+
+        widths = sorted(float(other['w']) for other in peers)
+        median_width = widths[len(widths) // 2]
+        width_ratio = float(token['w']) / median_width
+        if 0.88 <= width_ratio <= 1.12:
+            token['text'] = base
+
+
 def merge_number_fragments(row):
     """
     合併被拆開的數字。
@@ -117,12 +158,14 @@ def merge_number_fragments(row):
     再依距離由近而遠逐一配成對。以逗號結尾是極強的訊號——單獨的
     金額不會以逗號收尾。
     """
+    repair_trailing_gridline_digit(row)
+
     if len(row) < 2:
         return row
 
     NUMISH = re.compile(r'^-?[\d,]+$')
     # 尾段可能夾帶多餘標點（例：「690.」），比對時允許結尾有分隔字元
-    THREE = re.compile(r'^\d{3},?$')
+    THREE = re.compile(r'^\d{3}[,\-/|()（）\[\]［］]*$')
     MAX_GAP = 0.06                      # 仍遠小於典型欄距
 
     body = [dict(t) for t in row[1:]]
@@ -239,18 +282,65 @@ def _vertical_block(rows):
         return next((r for r in rows
                      if label_pred((r[0]['text'] or '').strip()) and len(r) > 1), None)
 
-    name_row = first_row(lambda s: s == '姓名')
-    if not name_row:
-        return []
+    def money_tokens(row, minimum=1000):
+        return [t for t in row[1:]
+                if is_num(t.get('text', '')) and abs(to_int(t.get('text', ''))) >= minimum]
 
+    # 先找本俸列。標準版面使用 FIELD_ALIAS；掃描品質差時，改找表頭後
+    # 第一列「至少三個四位數以上金額」，避免依賴容易誤讀的「本俸」二字。
+    base_idx = next(
+        (i for i, r in enumerate(rows)
+         if FIELD_ALIAS.get((r[0]['text'] or '').strip()) == '薪俸'
+         and len(money_tokens(r)) >= 2),
+        None)
+    if base_idx is None:
+        base_idx = next(
+            (i for i, r in enumerate(rows[:24])
+             if len(money_tokens(r, 10000)) >= 3),
+            None)
+    if base_idx is None:
+        return []
+    base_row = rows[base_idx]
+
+    name_row = first_row(lambda s: s == '姓名')
     names = []
-    for t in name_row[1:]:
+
+    def add_name(t):
         nm = (t['text'] or '').strip()
         if not nm or any(w in nm for w in SKIP_WORDS):
-            continue
-        if len(nm) > 5:
-            continue
+            return
+        if len(nm) > 5 or t.get('x', 0) < 0.08:
+            return
+        if not is_name(nm) or _suspicious_name(nm):
+            return
         names.append({'姓名': nm, 'x': t['x'], '_conf': [t['conf']]})
+
+    if name_row:
+        for t in name_row[1:]:
+            add_name(t)
+        name_y = name_row[0]['y']
+    else:
+        # 鼓山版面每頁表頭常被讀成「上.名／生名／E名」，甚至同一姓名列
+        # 被拆成相鄰兩列。先找表頭區中最早一列至少兩個合理人名，再合併
+        # 上下 0.012 內的姓名 token。排除 x<0.08 可避開誤讀的列標題。
+        candidates = []
+        for i, r in enumerate(rows[:base_idx]):
+            vals = [t for t in r if t.get('x', 0) >= 0.08
+                    and is_name((t.get('text') or '').strip())
+                    and not _suspicious_name(t.get('text'))
+                    and not any(w in (t.get('text') or '') for w in SKIP_WORDS)]
+            if len(vals) >= 2:
+                candidates.append((i, vals))
+        if not candidates:
+            return []
+        ni, _ = candidates[0]
+        name_y = rows[ni][0]['y']
+        for r in rows[:base_idx]:
+            if abs(r[0]['y'] - name_y) <= 0.012:
+                for t in r:
+                    add_name(t)
+
+    names.sort(key=lambda n: n['x'])
     if not names:
         return []
 
@@ -259,19 +349,16 @@ def _vertical_block(rows):
     for want in ('應發金額', '薪俸'):
         for r in rows:
             lab = (r[0]['text'] or '').strip()
-            if FIELD_ALIAS.get(lab) == want and len(r) - 1 >= len(names):
+            if (FIELD_ALIAS.get(lab) == want
+                    and len(money_tokens(r)) >= len(names)):
                 ref = r
                 break
         if ref:
             break
     if ref is None:
-        cands = [r for r in rows
-                 if (r[0]['text'] or '').strip() in FIELD_ALIAS and len(r) > 1]
-        if not cands:
-            return []
-        ref = max(cands, key=len)
+        ref = base_row
 
-    num_xs = [t['x'] for t in ref[1:]]
+    num_xs = sorted(t['x'] for t in money_tokens(ref))
     if len(num_xs) < len(names):
         names = names[:len(num_xs)]
     # 小計／合計位於最右側，取左起與人數相同的欄位即可
@@ -286,7 +373,7 @@ def _vertical_block(rows):
     def assign_num(row, key):
         for t in row[1:]:
             txt = (t['text'] or '').strip()
-            if not txt:
+            if not txt or not is_num(txt):
                 continue
             best, bd = None, 9
             for c in cols:
@@ -312,12 +399,51 @@ def _vertical_block(rows):
                 best[key] = txt
                 best['_conf'].append(t['conf'])
 
+    # 表頭的「職稱」也可能被讀成「成稱／E稱」；在姓名列與本俸列之間，
+    # 排除俸級數字後，依 x 座標把文字配回各人。
+    title_row = first_row(lambda s: s == '職稱')
+    if title_row:
+        assign_text(title_row, '職稱')
+    else:
+        for r in rows:
+            if not (name_y < r[0]['y'] < base_row[0]['y']):
+                continue
+            if len(money_tokens(r, 1)) >= 2:
+                continue
+            for t in r:
+                txt = (t.get('text') or '').strip()
+                if (not txt or is_num(txt) or t.get('x', 0) < 0.08
+                        or any(w in txt for w in SKIP_WORDS)):
+                    continue
+                best, bd = None, 9
+                for c in cols:
+                    d = abs(t['x'] - c['x'])
+                    if d < bd:
+                        best, bd = c, d
+                if best is not None and bd <= tol:
+                    best['職稱'] = txt
+                    best['_conf'].append(t['conf'])
+
+    # 鼓山各頁欄名雖會變形，但資料列順序固定。本俸起算的相對位置可作為
+    # 文字辨識失敗時的安全備援；精確讀到 FIELD_ALIAS 時仍以標準對應補強。
+    positional_fields = {
+        0: '薪俸',
+        1: '專業加給',
+        2: '主管加給',
+        3: '導師費',
+        7: '特教加給',
+        8: '地域加給',
+        9: '應發金額',
+    }
+    for offset, key in positional_fields.items():
+        ri = base_idx + offset
+        if ri < len(rows):
+            assign_num(rows[ri], key)
+
     for r in rows:
         label = (r[0]['text'] or '').strip()
         if label == '身分證字號':
             assign_text(r, '身分證')
-        elif label == '職稱':
-            assign_text(r, '職稱')
         elif label in FIELD_ALIAS:
             assign_num(r, FIELD_ALIAS[label])
 
@@ -460,6 +586,24 @@ def _candidate_score(people):
             + 4 * arith_ok / n
             + 3 * valid_ids / n
             - 12 * suspicious / n)
+
+
+def layout_diagnostics(tokens):
+    """回傳不含姓名或金額的雙版面診斷摘要，供 worker 異常時記錄。"""
+    rows = group_rows(tokens)
+    evidence = _layout_evidence(rows)
+    detected = detect_layout(rows)
+    result = {'evidence': evidence, 'detected': detected, 'candidates': {}}
+    for layout in ('vertical', 'horizontal'):
+        people = _parse_as(rows, layout)
+        result['candidates'][layout] = {
+            'people': len(people),
+            'score': round(_candidate_score(people), 2),
+            'arith_ok': sum(1 for p in people if p.get('加總相符')),
+            'suspicious_names': sum(
+                1 for p in people if _suspicious_name(p.get('姓名'))),
+        }
+    return result
 
 
 def parse_tokens(tokens, preferred_layout=None):

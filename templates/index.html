@@ -588,7 +588,8 @@ function renderReview(d) {
     + '欄位已填入辨識到的數值，<b>請對照紙本清冊確認</b>，紅框處特別需要留意。<br>'
     + '四項相加等於應發金額時，該列會轉為綠色。</div>';
 
-  const titles = [...new Set(d.need.map(r => (r['職稱']||'').trim()).filter(Boolean))];
+  // 後端只提供可安全整類排除的非正式職稱；正式職稱永遠不顯示此選項。
+  const titles = d.exclude_title_options || [];
   if (titles.length) {
     h += '<div class="ex-bar"><b>不納入稽核的職稱</b>'
        + '（勾選後本次即排除，並記住供這所學校下次使用）：<br>';

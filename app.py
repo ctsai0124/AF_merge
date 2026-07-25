@@ -92,7 +92,10 @@ def load_exclusions(school=''):
     except Exception:
         d = {}
     e = d.get(school or '_default', {})
-    return {'titles': e.get('titles', []), 'names': e.get('names', []),
+    # 舊版本可能曾把正式職稱寫入設定；讀取時也要阻擋，避免繼續沿用。
+    titles = [t for t in e.get('titles', [])
+              if not paycheck.is_formal_title(t)]
+    return {'titles': titles, 'names': e.get('names', []),
             'use_default': e.get('use_default', True)}
 
 
@@ -104,8 +107,12 @@ def save_exclusions(school, titles, names, use_default=None):
         except Exception:
             d = {}
         prev = d.get(school or '_default', {})
+        safe_titles = {
+            t.strip() for t in titles
+            if t.strip() and not paycheck.is_formal_title(t.strip())
+        }
         d[school or '_default'] = {
-            'titles': sorted({t.strip() for t in titles if t.strip()}),
+            'titles': sorted(safe_titles),
             'names': sorted({n.strip() for n in names if n.strip()}),
             'use_default': prev.get('use_default', True) if use_default is None else bool(use_default),
         }
@@ -836,6 +843,12 @@ def ocr_status(job_id):
             return jsonify({
                 'status': 'need_review', 'success': True, 'job_id': job_id,
                 'auto_ok': len(good), 'need': need, 'school_key': skey,
+                # 正式職稱是稽核對象，永遠不提供「整類排除」選項。
+                'exclude_title_options': sorted({
+                    (n.get('職稱') or '').strip() for n in need
+                    if (n.get('職稱') or '').strip()
+                    and not paycheck.is_formal_title(n.get('職稱'))
+                }),
                 'af_names': sorted({a['姓名'] for a in af_records}),
                 'warnings': af_warns,
             })
