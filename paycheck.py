@@ -1,5 +1,5 @@
 """薪資清冊 PDF × AF 校對清冊 比對模組"""
-import io, os, re, tempfile
+import io, os, re, tempfile, unicodedata
 from difflib import get_close_matches
 
 import pandas as pd
@@ -20,6 +20,18 @@ def _n(v):
         return int(float(v)) if v else 0
     except Exception:
         return 0
+
+
+def _name_key(value):
+    """姓名比對用字串：統一相容字形並移除不可見空白／異體選擇符。"""
+    s = unicodedata.normalize('NFKC', str(value or ''))
+    return ''.join(
+        c for c in s
+        if not c.isspace()
+        and c not in ('\u200b', '\u200c', '\u200d', '\ufeff')
+        and not ('\ufe00' <= c <= '\ufe0f')
+        and not ('\U000e0100' <= c <= '\U000e01ef')
+    )
 
 
 # ── 1. AF 讀取 ────────────────────────────────────────
@@ -588,13 +600,6 @@ def from_ocr(ocr_people, af_records):
         pid = (p.get('身分證') or '').strip().upper()
         id_ok = bool(p.get('身分證有效')) and pid in by_id
 
-        if id_ok:
-            fixed, changed = by_id[pid]['姓名'], (by_id[pid]['姓名'] != raw)
-            name_ok = True
-        else:
-            fixed, changed = fix_name(raw, known)
-            name_ok = fixed in known
-
         vals = {
             '薪俸': _n(p.get('薪俸', 0)),
             '專業加給': _n(p.get('專業加給', 0)),
@@ -605,6 +610,20 @@ def from_ocr(ocr_people, af_records):
         s = sum(vals.values())
         sum_ok = bool(total) and s == total
         conf = p.get('最低信心')
+
+        if id_ok:
+            fixed, changed = by_id[pid]['姓名'], (by_id[pid]['姓名'] != raw)
+            name_ok = True
+        else:
+            fixed, changed = fix_name(raw, known)
+            name_ok = fixed in known
+            # 特殊字碼或 OCR 單字誤判：至少兩字同位置一致、四項金額全等，
+            # 且 AF 候選唯一時才採用。若有兩位候選則仍需人工確認。
+            if not name_ok and sum_ok:
+                amount_name = match_name_by_two_chars_and_amounts(
+                    raw, vals, af_records)
+                if amount_name:
+                    fixed, changed, name_ok = amount_name, True, True
 
         if name_ok and sum_ok:
             good.append({'姓名': fixed,
@@ -657,5 +676,35 @@ def fix_name(raw, known_names):
     raw = (raw or '').strip()
     if not raw or raw in known_names:
         return raw, False
+    normalized = [name for name in known_names
+                  if _name_key(name) == _name_key(raw)]
+    if len(normalized) == 1:
+        return normalized[0], normalized[0] != raw
     m = get_close_matches(raw, list(known_names), n=1, cutoff=0.5)
     return (m[0], True) if m else (raw, False)
+
+
+def match_name_by_two_chars_and_amounts(raw, vals, af_records):
+    """
+    特殊字／OCR 單字誤判的保守回退：
+    姓名同長度且至少兩字在相同位置一致，四項金額與 AF 全等，
+    並且只得到一個姓名候選時才回傳 AF 的標準姓名。
+    """
+    raw_key = _name_key(raw)
+    if len(raw_key) < 3:
+        return ''
+
+    candidates = set()
+    for af in af_records:
+        af_key = _name_key(af.get('姓名', ''))
+        if len(af_key) != len(raw_key):
+            continue
+        same = sum(a == b for a, b in zip(raw_key, af_key))
+        if same < 2:
+            continue
+        if all(_n(af.get(field, 0)) == _n(vals.get(field, 0))
+               for field in FIELDS):
+            candidates.add(af.get('姓名', ''))
+
+    candidates.discard('')
+    return next(iter(candidates)) if len(candidates) == 1 else ''
