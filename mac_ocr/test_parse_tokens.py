@@ -60,7 +60,20 @@ class HorizontalRowTests(unittest.TestCase):
         self.assertEqual(person['專業加給'], 26560)
         self.assertEqual(person['導師特教'], 0)
         self.assertEqual(person['應發金額'], 62630)
+        self.assertFalse(person['應發金額推算'])
         self.assertEqual(person['加總差額'], 4000)
+
+    def test_insurance_amount_cannot_replace_missing_gross_total(self):
+        person = self.parse(
+            ('資源班', .03), ('245', .07), ('洪一茜', .11),
+            ('29270', .16), ('2800', .20), ('26560', .24),
+            ('4000', .28), ('3107', .42))
+        self.assertEqual(person['主管加給'], 2800)
+        self.assertEqual(person['專業加給'], 26560)
+        self.assertEqual(person['導師特教'], 4000)
+        self.assertEqual(person['應發金額'], 62630)
+        self.assertTrue(person['應發金額推算'])
+        self.assertFalse(person['加總相符'])
 
     def test_childcare_allowance_is_other(self):
         person = self.parse(

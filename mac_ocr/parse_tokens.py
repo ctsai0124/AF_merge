@@ -565,6 +565,7 @@ def parse_horizontal_row(row):
         return None
 
     pay, mgr, prof, duty, other, total = nums[0], 0, 0, 0, 0, 0
+    total_inferred = False
 
     # 薪資區最後有一個「小計」，必定等於月俸＋前方各項加給。
     # 找最早成立的前綴和即可切開後方保險、扣款欄，不依賴職稱猜空白欄。
@@ -604,7 +605,15 @@ def parse_horizontal_row(row):
         idx += 1
         if idx < len(nums) and 0 < nums[idx] < 20000:
             duty = nums[idx]; idx += 1
-        total = nums[idx] if idx < len(nums) else 0
+        total_candidate = nums[idx] if idx < len(nums) else 0
+        # 小計不可能小於月俸；若下一個數字已落入保險／扣款區（例如 3,107），
+        # 不能冒充應發金額。暫填薪資項目合計供人工核對，但標記為推算，
+        # 絕不讓它自動通過。
+        if total_candidate >= pay:
+            total = total_candidate
+        else:
+            total = pay + mgr + prof + duty + other
+            total_inferred = True
 
     s = pay + mgr + prof + duty + other
     return {
@@ -613,7 +622,8 @@ def parse_horizontal_row(row):
         '薪俸': pay, '主管加給': mgr, '專業加給': prof, '導師特教': duty,
         '其他加給': other,
         '應發金額': total,
-        '加總相符': (total > 0 and s == total),
+        '應發金額推算': total_inferred,
+        '加總相符': (total > 0 and s == total and not total_inferred),
         '加總差額': (total - s) if total else None,
         '最低信心': round(min(t['conf'] for t in row), 3),
     }

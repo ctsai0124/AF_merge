@@ -7,7 +7,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CFG = json.load(open(os.path.join(HERE, 'config.json'), encoding='utf-8'))
 SERVER, KEY = CFG['server'].rstrip('/'), CFG['key']
 POLL_MIN, POLL_MAX = 3, 60
-WORKER_VERSION = 'v10'
+WORKER_VERSION = 'v11'
 
 sys.path.insert(0, HERE)
 from parse_tokens import (

@@ -609,7 +609,8 @@ def from_ocr(ocr_people, af_records):
         other = _n(p.get('其他加給', 0))
         total = _n(p.get('應發金額', 0))
         s = sum(vals.values()) + other
-        sum_ok = bool(total) and s == total
+        total_inferred = bool(p.get('應發金額推算'))
+        sum_ok = bool(total) and s == total and not total_inferred
         conf = p.get('最低信心')
 
         if id_ok:
@@ -638,7 +639,10 @@ def from_ocr(ocr_people, af_records):
             if pid and not p.get('身分證有效'):
                 reasons.append(f'身分證「{pid}」檢查碼不符，可能辨識錯誤')
             reasons.append(f'姓名「{raw or "空白"}」無法對應 AF 名單')
-        if not total:
+        if total_inferred:
+            reasons.append(
+                f'未讀到印列應發金額，暫以薪資項目合計 {total:,} 填入，請對照紙本確認')
+        elif not total:
             reasons.append('未讀到應發金額，無法驗算')
         elif not sum_ok:
             reasons.append(f'薪資項目相加 {s:,} 與應發金額 {total:,} 不符（差 {total - s:+,}）')
