@@ -1,14 +1,24 @@
-from flask import Flask, request, jsonify, render_template, send_file
+from flask import Flask, request, jsonify, render_template, send_file, session
 import pandas as pd
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-import io, os, json, re, tempfile, subprocess
+import io, os, json, re, tempfile, subprocess, unicodedata, uuid
+from zipfile import BadZipFile
 from docx import Document
 from docx.oxml.ns import qn
 from collections import Counter, defaultdict
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
+# 用來簽署 session cookie（每次啟動重新產生即可；伺服器重啟後舊的
+# session 會失效，使用者只需要重新處理一次，暫存結果本來就會過期）。
+app.secret_key = os.environ.get('SECRET_KEY') or os.urandom(24)
+
+try:
+    import xlrd
+    FILE_FORMAT_ERRORS = (BadZipFile, xlrd.XLRDError)
+except Exception:
+    FILE_FORMAT_ERRORS = (BadZipFile,)
 
 SIMPLE_COLS = ['清冊序號', '姓名', '薪俸表別', '總金額', '支領數額',
                '專業加給表別', '總金額.1', '支領數額.1',
@@ -287,6 +297,51 @@ def bump_counter(key):
         return d
 
 
+# ── 排序結果暫存（依使用者 session 區分）─────────────────────
+# 原本用 app.config['LAST_RESULT'] 等全域變數存放最近一次的排序結果，
+# 多人同時使用時後面的人會蓋掉前面的人，導致下載到別人的資料。
+# 改為每次處理配一個獨立的 result_id，實際內容存在下面的記憶體字典，
+# 並透過使用者瀏覽器的 session cookie 記住自己的 result_id，
+# 下載／列印時依自己的 result_id 取回，彼此不會互相汙染。
+_results_lock = threading.Lock()
+_results = {}           # result_id -> {...}
+RESULT_TTL = 3600        # 暫存結果 1 小時後過期，避免無限累積佔用記憶體
+
+
+def _results_gc():
+    now = time.time()
+    for rid in [r for r, v in _results.items() if now - v['created'] > RESULT_TTL]:
+        _results.pop(rid, None)
+
+
+def save_result(result_df, school_name, sn2, yearmonth):
+    """把排序結果存到暫存區，並記在目前使用者的 session 裡。"""
+    rid = uuid.uuid4().hex
+    with _results_lock:
+        _results_gc()
+        _results[rid] = {
+            'created': time.time(),
+            'data': result_df.fillna('').to_json(orient='records', force_ascii=False),
+            'columns': result_df.columns.tolist(),
+            'school_name': school_name,
+            'sn2': sn2,
+            'yearmonth': yearmonth,
+        }
+    session['result_id'] = rid
+    return rid
+
+
+def get_current_result():
+    """依目前使用者 session 中的 result_id 取回暫存結果；
+    尚未處理過或已過期時回傳 None。"""
+    rid = session.get('result_id')
+    if not rid:
+        return None
+    with _results_lock:
+        _results_gc()
+        return _results.get(rid)
+
+
 # ── 原有功能 ──────────────────────────────────────────────
 
 def load_school_df():
@@ -412,6 +467,10 @@ def sort_af_by_roster(roster_df, af_df):
     roster['姓名'] = roster['姓名'].map(
         lambda value: '' if pd.isna(value) else str(value).strip()
     )
+    # 先把全形數字（１２３）正規化成半形，避免這類序號被誤判為空白而整列被排除。
+    roster['序號'] = roster['序號'].map(
+        lambda value: unicodedata.normalize('NFKC', str(value)) if pd.notna(value) else value
+    )
     roster['序號'] = pd.to_numeric(roster['序號'], errors='coerce')
     roster = roster.dropna(subset=['序號'])
     roster = roster[roster['姓名'] != ''].copy()
@@ -421,6 +480,9 @@ def sort_af_by_roster(roster_df, af_df):
     roster = roster.sort_values('序號', kind='stable').reset_index(drop=True)
     if roster.empty:
         raise ValueError('固定清冊的 input 工作表沒有可用的人員資料')
+
+    seq_counts = Counter(roster['序號'])
+    duplicate_seqs = sorted(seq for seq, count in seq_counts.items() if count > 1)
 
     af_df['姓名'] = af_df['姓名'].map(
         lambda value: '' if pd.isna(value) else str(value).strip()
@@ -518,6 +580,9 @@ def sort_af_by_roster(roster_df, af_df):
         result_df = result_df[['清冊序號'] + cols].reset_index(drop=True)
 
     warnings = []
+    if duplicate_seqs:
+        seq_list = '、'.join(str(int(s)) for s in duplicate_seqs)
+        warnings.append(f'固定清冊中以下序號重複，請確認是否誤植：{seq_list}')
     if not_found:
         warnings.append('清冊中以下人員在 AF 找不到對應：' + '、'.join(not_found))
     if extra_people:
@@ -558,7 +623,9 @@ def build_excel(data, columns):
             val = row.get(col, '')
             try:
                 if col in NUM_COLS and val != '':
-                    val = int(float(val))
+                    # AF 系統偶爾會匯出帶千分位逗號的金額（例如 "50,000"），
+                    # 先去掉逗號再轉數字，避免留在儲存格裡變成無法加總的文字。
+                    val = int(float(str(val).replace(',', '')))
             except (ValueError, TypeError):
                 pass
             cell = ws.cell(row=ri, column=ci, value=val)
@@ -682,11 +749,7 @@ def process():
         sn1, yearmonth = parse_af_filename(af_f.filename)
         school_name, sn2 = lookup_school(sn1)
 
-        app.config['LAST_RESULT'] = result_df.fillna('').to_json(orient='records', force_ascii=False)
-        app.config['LAST_COLUMNS'] = result_df.columns.tolist()
-        app.config['LAST_SCHOOL'] = school_name
-        app.config['LAST_SN2'] = sn2
-        app.config['LAST_YEARMONTH'] = yearmonth
+        save_result(result_df, school_name, sn2, yearmonth)
 
         counts = bump_counter('sorts')
 
@@ -706,6 +769,8 @@ def process():
         return jsonify({'error': '找不到欄位或工作表：' + str(e) + '，請確認檔案格式與範例相符'}), 400
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
+    except FILE_FORMAT_ERRORS:
+        return jsonify({'error': '檔案格式錯誤，請確認上傳的是正確的 Excel 檔案（.xlsx 或 .xls），且檔案未損毀'}), 400
     except Exception as e:
         return jsonify({'error': '處理錯誤：' + str(e)}), 500
 
@@ -729,6 +794,8 @@ def compare_pdf():
         af_records, af_warns = paycheck.load_af(af_bytes, af_name)
     except KeyError as e:
         return jsonify({'error': str(e)}), 400
+    except FILE_FORMAT_ERRORS:
+        return jsonify({'error': '檔案格式錯誤，請確認上傳的是正確的 Excel 檔案（.xlsx 或 .xls），且檔案未損毀'}), 400
     except Exception as e:
         return jsonify({'error': '讀取 AF 失敗：' + str(e)}), 500
 
@@ -1032,10 +1099,11 @@ def ocr_status(job_id):
 
 @app.route('/download-simple')
 def download_simple():
-    if 'LAST_RESULT' not in app.config:
-        return '尚無資料可下載', 400
-    data = json.loads(app.config['LAST_RESULT'])
-    all_cols = app.config['LAST_COLUMNS']
+    r = get_current_result()
+    if not r:
+        return '尚無資料可下載，請重新處理一次', 400
+    data = json.loads(r['data'])
+    all_cols = r['columns']
     cols = [c for c in SIMPLE_COLS if c in all_cols]
     out = build_excel(data, cols)
     return send_file(out, as_attachment=True, download_name='排序結果(簡單版).xlsx',
@@ -1044,10 +1112,11 @@ def download_simple():
 
 @app.route('/download-simple-region')
 def download_simple_region():
-    if 'LAST_RESULT' not in app.config:
-        return '尚無資料可下載', 400
-    data = json.loads(app.config['LAST_RESULT'])
-    all_cols = app.config['LAST_COLUMNS']
+    r = get_current_result()
+    if not r:
+        return '尚無資料可下載，請重新處理一次', 400
+    data = json.loads(r['data'])
+    all_cols = r['columns']
     cols = [c for c in SIMPLE_REGION_COLS if c in all_cols]
     out = build_excel(data, cols)
     return send_file(out, as_attachment=True, download_name='排序結果(簡單地域加給版).xlsx',
@@ -1056,19 +1125,21 @@ def download_simple_region():
 
 @app.route('/download-result')
 def download_result():
-    if 'LAST_RESULT' not in app.config:
-        return '尚無資料可下載', 400
-    data = json.loads(app.config['LAST_RESULT'])
-    columns = app.config['LAST_COLUMNS']
+    r = get_current_result()
+    if not r:
+        return '尚無資料可下載，請重新處理一次', 400
+    data = json.loads(r['data'])
+    columns = r['columns']
     out = build_excel(data, columns)
     return send_file(out, as_attachment=True, download_name='排序結果(完整版).xlsx',
                      mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 
 def _docx_to_pdf():
-    school_name = app.config.get('LAST_SCHOOL', '')
-    sn2 = app.config.get('LAST_SN2', '')
-    yearmonth = app.config.get('LAST_YEARMONTH', '')
+    r = get_current_result() or {}
+    school_name = r.get('school_name', '')
+    sn2 = r.get('sn2', '')
+    yearmonth = r.get('yearmonth', '')
     try:
         docx_buf = build_audit_docx(school_name, sn2, yearmonth)
         docx_buf.seek(0)
@@ -1136,11 +1207,12 @@ def _build_audit_html(school_name, sn2, yearmonth, data):
 
 @app.route('/print-simple')
 def print_simple():
-    if 'LAST_RESULT' not in app.config:
-        return '尚無資料可列印', 400
-    school_name = app.config.get('LAST_SCHOOL', '')
-    data = json.loads(app.config.get('LAST_RESULT', '[]'))
-    all_cols = app.config.get('LAST_COLUMNS', [])
+    r = get_current_result()
+    if not r:
+        return '尚無資料可列印，請重新處理一次', 400
+    school_name = r.get('school_name', '')
+    data = json.loads(r['data'])
+    all_cols = r['columns']
     simple_cols = [c for c in SIMPLE_COLS if c in all_cols]
 
     thead = ''.join(f'<th>{c}</th>' for c in simple_cols)
@@ -1176,24 +1248,26 @@ def print_simple():
 
 @app.route('/print-audit')
 def print_audit():
-    if 'LAST_SCHOOL' not in app.config:
+    r = get_current_result()
+    if not r:
         return 'No data', 400
-    school_name = app.config.get('LAST_SCHOOL', '')
-    sn2 = app.config.get('LAST_SN2', '')
-    yearmonth = app.config.get('LAST_YEARMONTH', '')
+    school_name = r.get('school_name', '')
+    sn2 = r.get('sn2', '')
+    yearmonth = r.get('yearmonth', '')
     html = _build_audit_print_html(school_name, sn2, yearmonth, auto_print=True)
     return html, 200, {'Content-Type': 'text/html; charset=utf-8'}
 
 
 @app.route('/print-all')
 def print_all():
-    if 'LAST_RESULT' not in app.config:
+    r = get_current_result()
+    if not r:
         return 'No data', 400
-    school_name = app.config.get('LAST_SCHOOL', '')
-    sn2 = app.config.get('LAST_SN2', '')
-    yearmonth = app.config.get('LAST_YEARMONTH', '')
-    data = json.loads(app.config.get('LAST_RESULT', '[]'))
-    all_cols = app.config.get('LAST_COLUMNS', [])
+    school_name = r.get('school_name', '')
+    sn2 = r.get('sn2', '')
+    yearmonth = r.get('yearmonth', '')
+    data = json.loads(r['data'])
+    all_cols = r['columns']
     simple_cols = [c for c in SIMPLE_COLS if c in all_cols]
     thead = ''.join('<th>' + c + '</th>' for c in simple_cols)
     tbody = ''
@@ -1337,11 +1411,12 @@ def _build_audit_print_html(school_name, sn2, yearmonth, auto_print=False, inner
 
 @app.route('/download-audit')
 def download_audit():
-    if 'LAST_SCHOOL' not in app.config:
-        return '尚無資料可下載', 400
-    school_name = app.config.get('LAST_SCHOOL', '')
-    sn2 = app.config.get('LAST_SN2', '')
-    yearmonth = app.config.get('LAST_YEARMONTH', '')
+    r = get_current_result()
+    if not r:
+        return '尚無資料可下載，請重新處理一次', 400
+    school_name = r.get('school_name', '')
+    sn2 = r.get('sn2', '')
+    yearmonth = r.get('yearmonth', '')
     out = build_audit_docx(school_name, sn2, yearmonth)
     filename = f'稽核表_{school_name or "未知學校"}.docx'
     return send_file(out, as_attachment=True, download_name=filename,

@@ -7,7 +7,7 @@ from unittest.mock import patch
 import openpyxl
 import pandas as pd
 
-from app import app, read_sheet, sort_af_by_roster
+from app import app, read_sheet, sort_af_by_roster, build_excel
 
 
 def af_rows(rows):
@@ -214,6 +214,93 @@ class SortAfByRosterTests(unittest.TestCase):
         payload = response.get_json()
         self.assertTrue(payload['success'])
         self.assertEqual(payload['preview'][0]['清冊序號'], 1)
+
+    def test_fullwidth_sequence_digits_are_normalized(self):
+        roster = pd.DataFrame([{'序號': '１', '姓名': '王小明'}])
+        af = af_rows([{'姓名': '王小明', '身分證字號': 'A111111111', '薪俸表別': 'A'}])
+
+        result, warnings = sort_af_by_roster(roster, af)
+
+        self.assertEqual(result.loc[0, '清冊序號'], 1)
+        self.assertEqual(warnings, [])
+
+    def test_duplicate_sequence_numbers_trigger_warning(self):
+        roster = pd.DataFrame([
+            {'序號': 1, '姓名': '王小明'},
+            {'序號': 1, '姓名': '陳大華'},
+        ])
+        af = af_rows([
+            {'姓名': '王小明', '身分證字號': 'A111111111', '薪俸表別': 'A'},
+            {'姓名': '陳大華', '身分證字號': 'B222222222', '薪俸表別': 'B'},
+        ])
+
+        result, warnings = sort_af_by_roster(roster, af)
+
+        self.assertTrue(any('序號重複' in w and '1' in w for w in warnings))
+
+    def test_build_excel_strips_comma_formatted_amounts(self):
+        data = [{'清冊序號': 1, '姓名': '王小明', '總金額': '50,000'}]
+        out = build_excel(data, ['清冊序號', '姓名', '總金額'])
+        wb = openpyxl.load_workbook(out)
+        ws = wb.active
+
+        self.assertEqual(ws.cell(row=2, column=3).value, 50000)
+
+    def test_process_endpoint_rejects_corrupt_file_with_friendly_message(self):
+        with tempfile.TemporaryDirectory() as data_dir, patch.dict(
+            os.environ, {'DATA_DIR': data_dir}
+        ):
+            response = app.test_client().post('/process', data={
+                'roster': (io.BytesIO(b'not an excel file'), 'roster.xlsx'),
+                'af': (io.BytesIO(b'not an excel file'), 'af.xlsx'),
+            })
+
+        self.assertEqual(response.status_code, 400)
+        payload = response.get_json()
+        self.assertIn('檔案格式錯誤', payload['error'])
+        self.assertNotIn('zip file', payload['error'])
+
+    def test_download_results_do_not_leak_between_users(self):
+        """兩個不同使用者（各自獨立的 session）前後處理不同資料時，
+        各自下載到的必須是自己的結果，不會被對方蓋掉。"""
+        roster_a = workbook_bytes('input', [{'序號': 1, '姓名': '王小明'}])
+        af_a = workbook_bytes('AF', [
+            {'姓名': '王小明', '身分證字號': 'A111111111', '薪俸表別': 'A'},
+        ])
+        roster_b = workbook_bytes('input', [{'序號': 1, '姓名': '陳大華'}])
+        af_b = workbook_bytes('AF', [
+            {'姓名': '陳大華', '身分證字號': 'B222222222', '薪俸表別': 'B'},
+        ])
+
+        with tempfile.TemporaryDirectory() as data_dir, patch.dict(
+            os.environ, {'DATA_DIR': data_dir}
+        ):
+            client_a = app.test_client()
+            client_b = app.test_client()
+
+            resp_a = client_a.post('/process', data={
+                'roster': (io.BytesIO(roster_a), 'roster_a.xlsx'),
+                'af': (io.BytesIO(af_a), 'af_a.xlsx'),
+            })
+            self.assertTrue(resp_a.get_json()['success'])
+
+            # 模擬第二位使用者在第一位使用者下載結果之前，也上傳處理了另一份資料。
+            resp_b = client_b.post('/process', data={
+                'roster': (io.BytesIO(roster_b), 'roster_b.xlsx'),
+                'af': (io.BytesIO(af_b), 'af_b.xlsx'),
+            })
+            self.assertTrue(resp_b.get_json()['success'])
+
+            download_a = client_a.get('/download-result')
+            wb_a = openpyxl.load_workbook(io.BytesIO(download_a.data))
+            names_a = [row[1] for row in wb_a.active.iter_rows(min_row=2, values_only=True)]
+
+            download_b = client_b.get('/download-result')
+            wb_b = openpyxl.load_workbook(io.BytesIO(download_b.data))
+            names_b = [row[1] for row in wb_b.active.iter_rows(min_row=2, values_only=True)]
+
+        self.assertEqual(names_a, ['王小明'])
+        self.assertEqual(names_b, ['陳大華'])
 
 
 if __name__ == '__main__':
