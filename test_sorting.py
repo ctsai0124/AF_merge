@@ -167,9 +167,11 @@ class SortAfByRosterTests(unittest.TestCase):
         payload = response.get_json()
         self.assertTrue(payload['success'])
         self.assertEqual(
-            [row['身分證字號'] for row in payload['preview']],
-            ['A111111111', 'B222222222'],
+            [row['姓名'] for row in payload['preview']],
+            ['王同名', '王同名'],
         )
+        self.assertNotIn('身分證字號', payload['columns'])
+        self.assertNotIn('身分證字號', payload['preview'][0])
 
     def test_process_endpoint_falls_back_and_reports_first_sheet(self):
         roster_bytes = workbook_bytes('學校名冊', [
@@ -245,6 +247,23 @@ class SortAfByRosterTests(unittest.TestCase):
         ws = wb.active
 
         self.assertEqual(ws.cell(row=2, column=3).value, 50000)
+
+    def test_build_excel_writes_formula_like_text_as_literal_text(self):
+        values = ['=1+1', '+2+2', '-3+3', '@SUM(1,1)']
+        data = [
+            {'清冊序號': index, '姓名': value}
+            for index, value in enumerate(values, 1)
+        ]
+
+        out = build_excel(data, ['清冊序號', '姓名'])
+        wb = openpyxl.load_workbook(out, data_only=False)
+        ws = wb.active
+
+        for row, value in enumerate(values, 2):
+            with self.subTest(value=value):
+                cell = ws.cell(row=row, column=2)
+                self.assertEqual(cell.value, "'" + value)
+                self.assertEqual(cell.data_type, 's')
 
     def test_process_endpoint_rejects_corrupt_file_with_friendly_message(self):
         with tempfile.TemporaryDirectory() as data_dir, patch.dict(
@@ -380,6 +399,44 @@ class SortAfByRosterTests(unittest.TestCase):
         # 同一個 session 再次處理，暫存筆數不應該累加（舊的要被清掉）。
         self.assertEqual(before, after)
 
+    def test_results_cache_evicts_oldest_result_when_byte_limit_is_reached(self):
+        import app as app_module
+
+        result = pd.DataFrame([{'清冊序號': 1, '姓名': '測試人員' * 20}])
+        result_size = len(
+            result.fillna('').to_json(orient='records', force_ascii=False).encode('utf-8')
+        )
+
+        with patch.object(app_module, 'MAX_RESULTS', 100), patch.object(
+            app_module, 'MAX_RESULT_CACHE_BYTES', result_size * 2 - 1
+        ), patch.object(app_module, 'MAX_SINGLE_RESULT_BYTES', result_size * 2 - 1):
+            with app_module._results_lock:
+                app_module._results.clear()
+            try:
+                with app_module.app.test_request_context('/'):
+                    app_module.save_result(result, '', '', '')
+                    first_rid = app_module.session['result_id']
+
+                with app_module.app.test_request_context('/'):
+                    app_module.save_result(result, '', '', '')
+                    second_rid = app_module.session['result_id']
+
+                self.assertNotIn(first_rid, app_module._results)
+                self.assertIn(second_rid, app_module._results)
+            finally:
+                with app_module._results_lock:
+                    app_module._results.clear()
+
+    def test_single_oversized_result_is_rejected_before_caching(self):
+        import app as app_module
+
+        result = pd.DataFrame([{'清冊序號': 1, '姓名': '資料量測試'}])
+        with app_module.app.test_request_context('/'), patch.object(
+            app_module, 'MAX_SINGLE_RESULT_BYTES', 1
+        ):
+            with self.assertRaisesRegex(ValueError, '排序結果資料量過大'):
+                app_module.save_result(result, '', '', '')
+
     def test_decimal_sequence_number_is_rejected_instead_of_truncated(self):
         roster = pd.DataFrame([
             {'序號': 1.5, '姓名': '王小明'},
@@ -392,6 +449,48 @@ class SortAfByRosterTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, '序號必須是正整數'):
             sort_af_by_roster(roster, af)
+
+    def test_non_numeric_sequence_number_is_rejected_instead_of_dropped(self):
+        roster = pd.DataFrame([
+            {'序號': 1, '姓名': '王小明'},
+            {'序號': '1O', '姓名': '李小華'},
+        ])
+        af = af_rows([
+            {'姓名': '王小明', '身分證字號': 'A111111111', '薪俸表別': 'A'},
+            {'姓名': '李小華', '身分證字號': 'B222222222', '薪俸表別': 'B'},
+        ])
+
+        with self.assertRaisesRegex(ValueError, '李小華（序號 1O）'):
+            sort_af_by_roster(roster, af)
+
+    def test_blank_sequence_with_name_is_rejected(self):
+        roster = pd.DataFrame([{'序號': '', '姓名': '王小明'}])
+        af = af_rows([
+            {'姓名': '王小明', '身分證字號': 'A111111111', '薪俸表別': 'A'},
+        ])
+
+        with self.assertRaisesRegex(ValueError, '王小明（序號 空白）'):
+            sort_af_by_roster(roster, af)
+
+    def test_300_row_roster_stays_within_normal_processing_range(self):
+        roster = pd.DataFrame([
+            {'序號': index, '姓名': f'測試人員{index:03d}'}
+            for index in range(1, 301)
+        ])
+        af = af_rows([
+            {
+                '姓名': f'測試人員{index:03d}',
+                '身分證字號': f'T{index:09d}',
+                '薪俸表別': 'A',
+            }
+            for index in range(1, 301)
+        ])
+
+        result, warnings = sort_af_by_roster(roster, af)
+
+        self.assertEqual(len(result), 300)
+        self.assertEqual(result.iloc[-1]['清冊序號'], 300)
+        self.assertEqual(warnings, [])
 
 
 if __name__ == '__main__':

@@ -318,7 +318,9 @@ def bump_counter(key):
 _results_lock = threading.Lock()
 _results = {}           # result_id -> {...}
 RESULT_TTL = 3600        # 暫存結果 1 小時後過期，避免無限累積佔用記憶體
-MAX_RESULTS = 500        # 同時暫存的處理結果筆數上限，避免短時間大量使用把記憶體塞爆
+MAX_RESULTS = 100        # 正常每份約 300 人；保留最近 100 份已足夠多人同時使用
+MAX_RESULT_CACHE_BYTES = 64 * 1024 * 1024  # 全部排序結果合計最多約 64 MB
+MAX_SINGLE_RESULT_BYTES = 8 * 1024 * 1024  # 單份異常肥大的結果直接拒絕，避免擠掉所有使用者
 
 
 def _results_gc():
@@ -327,9 +329,23 @@ def _results_gc():
         _results.pop(rid, None)
 
 
+def _result_size(result):
+    """回傳暫存結果的 UTF-8 大小；相容尚未帶 size_bytes 的舊資料。"""
+    if 'size_bytes' in result:
+        return result['size_bytes']
+    return len(result.get('data', '').encode('utf-8'))
+
+
 def save_result(result_df, school_name, sn2, yearmonth):
     """把排序結果存到暫存區，並記在目前使用者的 session 裡。"""
     rid = uuid.uuid4().hex
+    result_json = result_df.fillna('').to_json(orient='records', force_ascii=False)
+    result_size = len(result_json.encode('utf-8'))
+    if result_size > min(MAX_SINGLE_RESULT_BYTES, MAX_RESULT_CACHE_BYTES):
+        raise ValueError(
+            '排序結果資料量過大，請確認檔案內容或分批處理（一般 300 筆以內可正常使用）'
+        )
+
     with _results_lock:
         _results_gc()
         # 同一個使用者重新處理一次時，先丟掉他自己上一次的暫存結果，
@@ -337,13 +353,20 @@ def save_result(result_df, school_name, sn2, yearmonth):
         old_rid = session.get('result_id')
         if old_rid:
             _results.pop(old_rid, None)
-        # 全域數量仍超過上限時，淘汰最舊的一筆，避免無上限成長。
-        if len(_results) >= MAX_RESULTS:
+        # 同時限制結果份數與實際位元組數；只限制份數仍可能被少數大型
+        # Excel 撐滿記憶體。超過任一上限時由最舊結果開始淘汰。
+        cache_bytes = sum(_result_size(result) for result in _results.values())
+        while _results and (
+            len(_results) >= MAX_RESULTS
+            or cache_bytes + result_size > MAX_RESULT_CACHE_BYTES
+        ):
             oldest_rid = min(_results, key=lambda k: _results[k]['created'])
-            _results.pop(oldest_rid, None)
+            removed = _results.pop(oldest_rid)
+            cache_bytes -= _result_size(removed)
         _results[rid] = {
             'created': time.time(),
-            'data': result_df.fillna('').to_json(orient='records', force_ascii=False),
+            'data': result_json,
+            'size_bytes': result_size,
             'columns': result_df.columns.tolist(),
             'school_name': school_name,
             'sn2': sn2,
@@ -490,24 +513,32 @@ def sort_af_by_roster(roster_df, af_df):
         lambda value: '' if pd.isna(value) else str(value).strip()
     )
     # 先把全形數字（１２３）正規化成半形，避免這類序號被誤判為空白而整列被排除。
-    roster['序號'] = roster['序號'].map(
+    roster['_raw_sequence'] = roster['序號'].map(
         lambda value: unicodedata.normalize('NFKC', str(value)) if pd.notna(value) else value
     )
-    roster['序號'] = pd.to_numeric(roster['序號'], errors='coerce')
-    roster = roster.dropna(subset=['序號'])
-    roster = roster[roster['姓名'] != ''].copy()
+    roster['序號'] = pd.to_numeric(roster['_raw_sequence'], errors='coerce')
 
-    # 序號必須是正整數；小數（例如 1.5）用 int() 會被無聲截斷成 1，
-    # 造成清冊排序跟使用者原本填的號碼對不起來，所以要明確擋下來提示，
-    # 而不是默默吃掉小數點以下的部分。
-    invalid_seq = roster[(roster['序號'] % 1 != 0) | (roster['序號'] <= 0)]
+    # 有姓名的資料列都必須提供正整數序號。空白、文字、小數、零與負數
+    # 都明確提示；不能先用 errors='coerce' 轉成空值後靜默刪掉該人。
+    named_rows = roster[roster['姓名'] != ''].copy()
+    invalid_seq = named_rows[
+        named_rows['序號'].isna()
+        | (named_rows['序號'] % 1 != 0)
+        | (named_rows['序號'] <= 0)
+    ]
     if not invalid_seq.empty:
+        def sequence_label(value):
+            if pd.isna(value) or not str(value).strip():
+                return '空白'
+            return str(value).strip()
+
         bad = '、'.join(
-            f"{name}（序號 {seq:g}）"
-            for name, seq in zip(invalid_seq['姓名'], invalid_seq['序號'])
+            f"{name}（序號 {sequence_label(raw)}）"
+            for name, raw in zip(invalid_seq['姓名'], invalid_seq['_raw_sequence'])
         )
         raise ValueError(f'固定清冊的序號必須是正整數，請確認以下資料：{bad}')
 
+    roster = named_rows.drop(columns=['_raw_sequence'])
     roster['_match_id'] = (
         roster[roster_id_col].map(_normalize_person_id) if roster_id_col else ''
     )
@@ -662,6 +693,10 @@ def build_excel(data, columns):
                     val = int(float(str(val).replace(',', '')))
             except (ValueError, TypeError):
                 pass
+            # openpyxl 會把以「=」開頭的文字寫成公式；另外一併防護
+            # Excel 常見的 +、-、@ 公式前綴，確保上傳內容只能作為文字顯示。
+            if isinstance(val, str) and val.startswith(('=', '+', '-', '@')):
+                val = "'" + val
             cell = ws.cell(row=ri, column=ci, value=val)
             cell.font = data_font
             cell.border = border
@@ -787,11 +822,15 @@ def process():
 
         counts = bump_counter('sorts')
 
+        preview_columns = [col for col in SIMPLE_COLS if col in result_df.columns]
+        preview_df = result_df.loc[:, preview_columns].head(20).fillna('')
+
         return jsonify({
             'success': True,
             'counts': counts,
-            'preview': result_df.head(20).fillna('').to_dict(orient='records'),
-            'columns': result_df.columns.tolist(),
+            # 預覽畫面只需要簡單版欄位，不把身分證字號等未顯示個資送到瀏覽器。
+            'preview': preview_df.to_dict(orient='records'),
+            'columns': preview_columns,
             'total': len(result_df),
             'warnings': warnings,
             'school_name': school_name,
