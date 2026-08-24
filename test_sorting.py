@@ -28,6 +28,18 @@ def workbook_bytes(sheet_name, rows):
 
 
 class SortAfByRosterTests(unittest.TestCase):
+    def test_common_sequence_column_aliases_are_accepted(self):
+        af = af_rows([
+            {'姓名': '王小明', '身分證字號': 'A111111111', '薪俸表別': 'A'},
+        ])
+
+        for alias in ('編號', '號碼', '項次', '流水號', '序次', '次序', '排序', '排序號', 'No.', 'Number', '序 號'):
+            with self.subTest(alias=alias):
+                roster = pd.DataFrame([{alias: 1, '姓名': '王小明'}])
+                result, warnings = sort_af_by_roster(roster, af)
+                self.assertEqual(result.loc[0, '清冊序號'], 1)
+                self.assertEqual(warnings, [])
+
     def test_unique_names_still_match_by_name_without_roster_ids(self):
         roster = pd.DataFrame([
             {'序號': 2, '姓名': '李小華'},
@@ -181,6 +193,27 @@ class SortAfByRosterTests(unittest.TestCase):
             '固定清冊找不到 input 工作表，已自動改讀第一個工作表「學校名冊」',
             payload['warnings'],
         )
+
+    def test_process_endpoint_accepts_sequence_alias_on_first_sheet(self):
+        roster_bytes = workbook_bytes('基本資料', [
+            {'編號': 1, '姓名': '王小明'},
+        ])
+        af_bytes = workbook_bytes('AF', [
+            {'姓名': '王小明', '身分證字號': 'A111111111', '薪俸表別': 'A'},
+        ])
+
+        with tempfile.TemporaryDirectory() as data_dir, patch.dict(
+            os.environ, {'DATA_DIR': data_dir}
+        ):
+            response = app.test_client().post('/process', data={
+                'roster': (io.BytesIO(roster_bytes), '學校自己的基本資料.xlsx'),
+                'af': (io.BytesIO(af_bytes), 'AF_自訂檔名.xlsx'),
+            })
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['preview'][0]['清冊序號'], 1)
 
 
 if __name__ == '__main__':

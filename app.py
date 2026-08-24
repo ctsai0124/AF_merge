@@ -25,6 +25,9 @@ NUM_COLS = {'清冊序號', '總金額', '支領數額', '待遇差額', '補發
             '總金額.3', '支領數額.3', '待遇差額.3', '補發金額.3'}
 
 PERSON_ID_COLS = ('身分證字號', '身分證統一編號', '身分證')
+ROSTER_SEQUENCE_COLS = (
+    '序號', '編號', '號碼', '項次', '流水號', '序次', '次序', '排序', '排序號', 'NO', 'NUMBER'
+)
 
 # ── PDF 比對：見 paycheck.py ──
 import paycheck
@@ -347,6 +350,21 @@ def _person_id_column(df):
     return next((col for col in PERSON_ID_COLS if col in df.columns), None)
 
 
+def _header_key(value):
+    """欄位名稱比對時忽略空白、常見分隔符號與英文大小寫。"""
+    return re.sub(r'[\s　._\-–—:：]+', '', str(value)).upper()
+
+
+def _roster_sequence_column(df):
+    """辨識固定清冊中的排序序號欄位，優先採用正式名稱「序號」。"""
+    normalized = {col: _header_key(col) for col in df.columns}
+    for col, key in normalized.items():
+        if key == '序號':
+            return col
+    aliases = {_header_key(alias) for alias in ROSTER_SEQUENCE_COLS}
+    return next((col for col, key in normalized.items() if key in aliases), None)
+
+
 def _normalize_person_id(value):
     """身分證配對時忽略大小寫與空白，但不限制證號種類。"""
     if pd.isna(value):
@@ -370,11 +388,19 @@ def sort_af_by_roster(roster_df, af_df):
     roster_df.columns = [str(c).strip() for c in roster_df.columns]
     af_df.columns = [str(c).strip() for c in af_df.columns]
 
-    missing_roster = [col for col in ('序號', '姓名') if col not in roster_df.columns]
+    sequence_col = _roster_sequence_column(roster_df)
+    missing_roster = []
+    if not sequence_col:
+        missing_roster.append('序號（也可使用編號、號碼、項次或流水號）')
+    if '姓名' not in roster_df.columns:
+        missing_roster.append('姓名')
     if missing_roster:
         raise KeyError('固定清冊缺少欄位：' + '、'.join(missing_roster))
     if '姓名' not in af_df.columns:
         raise KeyError('AF 缺少欄位：姓名')
+
+    if sequence_col != '序號':
+        roster_df = roster_df.rename(columns={sequence_col: '序號'})
 
     roster_id_col = _person_id_column(roster_df)
     af_id_col = _person_id_column(af_df)
