@@ -302,6 +302,97 @@ class SortAfByRosterTests(unittest.TestCase):
         self.assertEqual(names_a, ['王小明'])
         self.assertEqual(names_b, ['陳大華'])
 
+    def test_process_endpoint_escapes_names_in_preview_html_paths(self):
+        """後端不需要對 JSON preview 裡的姓名做跳脫（前端已改用 textContent），
+        但這裡先確認惡意內容確實會原封不動地流到回應裡——用來佐證前端
+        必須自行做安全處理，同時避免以後有人不小心在後端 HTML 頁面
+        又直接把這欄位塞進字串。"""
+        payload_name = '<img src=x onerror=alert(1)>'
+        roster_bytes = workbook_bytes('input', [{'序號': 1, '姓名': payload_name}])
+        af_bytes = workbook_bytes('AF', [
+            {'姓名': payload_name, '身分證字號': 'A111111111', '薪俸表別': 'A'},
+        ])
+
+        with tempfile.TemporaryDirectory() as data_dir, patch.dict(
+            os.environ, {'DATA_DIR': data_dir}
+        ):
+            response = app.test_client().post('/process', data={
+                'roster': (io.BytesIO(roster_bytes), 'roster.xlsx'),
+                'af': (io.BytesIO(af_bytes), 'af.xlsx'),
+            })
+
+        payload = response.get_json()
+        self.assertEqual(payload['preview'][0]['姓名'], payload_name)
+
+    def test_print_simple_escapes_malicious_names(self):
+        roster_bytes = workbook_bytes('input', [
+            {'序號': 1, '姓名': '<img src=x onerror=alert(1)>'},
+        ])
+        af_bytes = workbook_bytes('AF', [
+            {'姓名': '<img src=x onerror=alert(1)>', '身分證字號': 'A111111111',
+             '薪俸表別': 'A'},
+        ])
+
+        with tempfile.TemporaryDirectory() as data_dir, patch.dict(
+            os.environ, {'DATA_DIR': data_dir}
+        ):
+            client = app.test_client()
+            resp = client.post('/process', data={
+                'roster': (io.BytesIO(roster_bytes), 'roster.xlsx'),
+                'af': (io.BytesIO(af_bytes), 'af.xlsx'),
+            })
+            self.assertTrue(resp.get_json()['success'])
+
+            html_resp = client.get('/print-simple')
+
+        body = html_resp.get_data(as_text=True)
+        self.assertNotIn('<img src=x onerror=alert(1)>', body)
+        self.assertIn('&lt;img src=x onerror=alert(1)&gt;', body)
+
+    def test_results_cache_evicts_previous_result_for_same_session(self):
+        roster_1 = workbook_bytes('input', [{'序號': 1, '姓名': '王小明'}])
+        af_1 = workbook_bytes('AF', [
+            {'姓名': '王小明', '身分證字號': 'A111111111', '薪俸表別': 'A'},
+        ])
+        roster_2 = workbook_bytes('input', [{'序號': 1, '姓名': '陳大華'}])
+        af_2 = workbook_bytes('AF', [
+            {'姓名': '陳大華', '身分證字號': 'B222222222', '薪俸表別': 'B'},
+        ])
+
+        import app as app_module
+
+        with tempfile.TemporaryDirectory() as data_dir, patch.dict(
+            os.environ, {'DATA_DIR': data_dir}
+        ):
+            client = app_module.app.test_client()
+            client.post('/process', data={
+                'roster': (io.BytesIO(roster_1), 'roster1.xlsx'),
+                'af': (io.BytesIO(af_1), 'af1.xlsx'),
+            })
+            before = len(app_module._results)
+
+            client.post('/process', data={
+                'roster': (io.BytesIO(roster_2), 'roster2.xlsx'),
+                'af': (io.BytesIO(af_2), 'af2.xlsx'),
+            })
+            after = len(app_module._results)
+
+        # 同一個 session 再次處理，暫存筆數不應該累加（舊的要被清掉）。
+        self.assertEqual(before, after)
+
+    def test_decimal_sequence_number_is_rejected_instead_of_truncated(self):
+        roster = pd.DataFrame([
+            {'序號': 1.5, '姓名': '王小明'},
+            {'序號': 2, '姓名': '陳大華'},
+        ])
+        af = af_rows([
+            {'姓名': '王小明', '身分證字號': 'A111111111', '薪俸表別': 'A'},
+            {'姓名': '陳大華', '身分證字號': 'B222222222', '薪俸表別': 'B'},
+        ])
+
+        with self.assertRaisesRegex(ValueError, '序號必須是正整數'):
+            sort_af_by_roster(roster, af)
+
 
 if __name__ == '__main__':
     unittest.main()

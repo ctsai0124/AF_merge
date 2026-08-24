@@ -201,7 +201,7 @@ tbody td.name-col{text-align:left;font-weight:600}
       <span>排序<b id="c-sorts">—</b></span>
       <span>比對<b id="c-compares">—</b></span>
     </div>
-    系統版本：v1.3.3　│　115 年度適用
+    系統版本：v1.3.4　│　115 年度適用
   </div>
 </div>
 
@@ -381,7 +381,7 @@ tbody td.name-col{text-align:left;font-weight:600}
 
 </div>
 
-<div class="footer">本系統僅供內部作業使用，請勿將資料外傳。｜版本 2026.08.24.12</div>
+<div class="footer">本系統僅供內部作業使用，請勿將資料外傳。｜版本 2026.08.24.13</div>
 
 <script>
 const files = {roster: null, af: null, pdf: null};
@@ -436,13 +436,23 @@ async function doProcess() {
     if (!res.ok || !data.success) {
       setMsg('err', data.error || '發生未知錯誤');
     } else {
-      let msgs = '';
+      // 警告訊息可能包含使用者上傳檔案裡的姓名、工作表名稱等內容，
+      // 一律用 textContent 塞入畫面，避免被當成 HTML/JavaScript 執行。
+      const msgBox = document.getElementById('msg');
+      msgBox.innerHTML = '';
       if (data.warnings && data.warnings.length) {
-        data.warnings.forEach(w => msgs += '<div class="warn-msg">⚠ ' + w + '</div>');
+        data.warnings.forEach(w => {
+          const div = document.createElement('div');
+          div.className = 'warn-msg';
+          div.textContent = '⚠ ' + w;
+          msgBox.appendChild(div);
+        });
       } else {
-        msgs = '<div class="ok-msg">✔ 排序完成，所有人員均成功對應。</div>';
+        const div = document.createElement('div');
+        div.className = 'ok-msg';
+        div.textContent = '✔ 排序完成，所有人員均成功對應。';
+        msgBox.appendChild(div);
       }
-      document.getElementById('msg').innerHTML = msgs;
 
       // 顯示學校名稱標題
       const schoolEl = document.getElementById('school-title');
@@ -463,8 +473,15 @@ async function doProcess() {
   }
 }
 function setMsg(type, text) {
+  // text 可能來自伺服器回傳的錯誤訊息（可能包含使用者檔案內的工作表名稱、
+  // 欄位名稱等內容），一律用 textContent 塞入，避免被當成 HTML/JavaScript 執行。
   const icons = {ok:'✔', warn:'⚠', err:'✗'};
-  document.getElementById('msg').innerHTML = '<div class="' + type + '-msg">' + icons[type] + ' ' + text + '</div>';
+  const box = document.getElementById('msg');
+  box.innerHTML = '';
+  const div = document.createElement('div');
+  div.className = type + '-msg';
+  div.textContent = icons[type] + ' ' + text;
+  box.appendChild(div);
 }
 
 const SIMPLE_COLS = ['清冊序號','姓名','薪俸表別','總金額','支領數額',
@@ -472,11 +489,31 @@ const SIMPLE_COLS = ['清冊序號','姓名','薪俸表別','總金額','支領�
                      '職務加給表別','總金額.2','支領數額.2'];
 
 function renderTable(cols, rows, total) {
+  // 資料來自使用者上傳的 Excel（姓名等欄位可能包含惡意內容），
+  // 一律用 textContent 建立節點，不用 innerHTML 直接塞字串，避免被當成 HTML/JavaScript 執行。
   simpleCols = SIMPLE_COLS.filter(c => cols.includes(c));
-  document.getElementById('tbl-head').innerHTML = simpleCols.map(c => '<th>' + c + '</th>').join('');
-  document.getElementById('tbl-body').innerHTML = rows.map(row =>
-    '<tr>' + simpleCols.map(c => '<td' + (c==='姓名'?' class="name-col"':'') + '>' + (row[c]??'') + '</td>').join('') + '</tr>'
-  ).join('');
+
+  const thead = document.getElementById('tbl-head');
+  thead.innerHTML = '';
+  simpleCols.forEach(c => {
+    const th = document.createElement('th');
+    th.textContent = c;
+    thead.appendChild(th);
+  });
+
+  const tbody = document.getElementById('tbl-body');
+  tbody.innerHTML = '';
+  rows.forEach(row => {
+    const tr = document.createElement('tr');
+    simpleCols.forEach(c => {
+      const td = document.createElement('td');
+      if (c === '姓名') td.className = 'name-col';
+      td.textContent = row[c] ?? '';
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+
   document.getElementById('stat-total').textContent = total;
   document.getElementById('tbl-note').textContent = total > 20
     ? '※ 預覽顯示前 20 筆（簡單版欄位），下載可取得完整資料。'

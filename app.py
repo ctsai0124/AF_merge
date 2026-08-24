@@ -3,6 +3,7 @@ import pandas as pd
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 import io, os, json, re, tempfile, subprocess, unicodedata, uuid
+import html as _html
 from zipfile import BadZipFile
 from docx import Document
 from docx.oxml.ns import qn
@@ -13,12 +14,23 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 # 用來簽署 session cookie（每次啟動重新產生即可；伺服器重啟後舊的
 # session 會失效，使用者只需要重新處理一次，暫存結果本來就會過期）。
 app.secret_key = os.environ.get('SECRET_KEY') or os.urandom(24)
+app.config.update(
+    SESSION_COOKIE_SECURE=True,     # 本站只透過 Cloudflare Tunnel 的 HTTPS 存取，cookie 只在加密連線下傳送
+    SESSION_COOKIE_HTTPONLY=True,   # 禁止 JavaScript 讀取 session cookie，降低 XSS 連帶竊取 session 的風險
+    SESSION_COOKIE_SAMESITE='Lax',  # 降低跨站請求偽造（CSRF）風險
+)
 
 try:
     import xlrd
     FILE_FORMAT_ERRORS = (BadZipFile, xlrd.XLRDError)
 except Exception:
     FILE_FORMAT_ERRORS = (BadZipFile,)
+
+
+def _esc(value):
+    """輸出到 HTML（列印頁、稽核表）前先跳脫，避免使用者上傳的 Excel
+    裡姓名／欄位等資料被瀏覽器當成 HTML／JavaScript 執行（XSS）。"""
+    return _html.escape('' if value is None else str(value))
 
 SIMPLE_COLS = ['清冊序號', '姓名', '薪俸表別', '總金額', '支領數額',
                '專業加給表別', '總金額.1', '支領數額.1',
@@ -306,6 +318,7 @@ def bump_counter(key):
 _results_lock = threading.Lock()
 _results = {}           # result_id -> {...}
 RESULT_TTL = 3600        # 暫存結果 1 小時後過期，避免無限累積佔用記憶體
+MAX_RESULTS = 500        # 同時暫存的處理結果筆數上限，避免短時間大量使用把記憶體塞爆
 
 
 def _results_gc():
@@ -319,6 +332,15 @@ def save_result(result_df, school_name, sn2, yearmonth):
     rid = uuid.uuid4().hex
     with _results_lock:
         _results_gc()
+        # 同一個使用者重新處理一次時，先丟掉他自己上一次的暫存結果，
+        # 避免內含個資的舊資料在記憶體裡留存超過必要的時間。
+        old_rid = session.get('result_id')
+        if old_rid:
+            _results.pop(old_rid, None)
+        # 全域數量仍超過上限時，淘汰最舊的一筆，避免無上限成長。
+        if len(_results) >= MAX_RESULTS:
+            oldest_rid = min(_results, key=lambda k: _results[k]['created'])
+            _results.pop(oldest_rid, None)
         _results[rid] = {
             'created': time.time(),
             'data': result_df.fillna('').to_json(orient='records', force_ascii=False),
@@ -474,6 +496,18 @@ def sort_af_by_roster(roster_df, af_df):
     roster['序號'] = pd.to_numeric(roster['序號'], errors='coerce')
     roster = roster.dropna(subset=['序號'])
     roster = roster[roster['姓名'] != ''].copy()
+
+    # 序號必須是正整數；小數（例如 1.5）用 int() 會被無聲截斷成 1，
+    # 造成清冊排序跟使用者原本填的號碼對不起來，所以要明確擋下來提示，
+    # 而不是默默吃掉小數點以下的部分。
+    invalid_seq = roster[(roster['序號'] % 1 != 0) | (roster['序號'] <= 0)]
+    if not invalid_seq.empty:
+        bad = '、'.join(
+            f"{name}（序號 {seq:g}）"
+            for name, seq in zip(invalid_seq['姓名'], invalid_seq['序號'])
+        )
+        raise ValueError(f'固定清冊的序號必須是正整數，請確認以下資料：{bad}')
+
     roster['_match_id'] = (
         roster[roster_id_col].map(_normalize_person_id) if roster_id_col else ''
     )
@@ -1169,17 +1203,17 @@ def _build_audit_html(school_name, sn2, yearmonth, data):
     rows_html = ''
     for row in data:
         rows_html += f'''<tr>
-      <td style="text-align:left">{row.get('姓名','')}</td>
-      <td>{row.get('薪俸表別','')}</td><td>{row.get('支領數額','')}</td>
-      <td>{row.get('專業加給表別','')}</td><td>{row.get('支領數額.1','')}</td>
-      <td>{row.get('職務加給表別','')}</td><td>{row.get('支領數額.2','')}</td>
-      <td>{row.get('地域加給表別','')}</td><td>{row.get('支領數額.3','')}</td>
+      <td style="text-align:left">{_esc(row.get('姓名',''))}</td>
+      <td>{_esc(row.get('薪俸表別',''))}</td><td>{_esc(row.get('支領數額',''))}</td>
+      <td>{_esc(row.get('專業加給表別',''))}</td><td>{_esc(row.get('支領數額.1',''))}</td>
+      <td>{_esc(row.get('職務加給表別',''))}</td><td>{_esc(row.get('支領數額.2',''))}</td>
+      <td>{_esc(row.get('地域加給表別',''))}</td><td>{_esc(row.get('支領數額.3',''))}</td>
     </tr>\n'''
     return f'''<h2 style="text-align:center;font-size:15px;margin-bottom:12px">高雄市政府教育局所屬機關學校 待遇稽核情形紀錄表</h2>
 <div style="display:flex;gap:40px;margin-bottom:12px;font-size:13px">
-  <span><strong style="color:#1a3a5c">學校名稱：</strong>{school_name or '（未對應）'}</span>
-  <span><strong style="color:#1a3a5c">編號：</strong>{sn2 or '—'}</span>
-  <span><strong style="color:#1a3a5c">稽核月份：</strong>{yearmonth or '—'}</span>
+  <span><strong style="color:#1a3a5c">學校名稱：</strong>{_esc(school_name) or '（未對應）'}</span>
+  <span><strong style="color:#1a3a5c">編號：</strong>{_esc(sn2) or '—'}</span>
+  <span><strong style="color:#1a3a5c">稽核月份：</strong>{_esc(yearmonth) or '—'}</span>
 </div>
 <table style="border-collapse:collapse;width:100%;font-size:12px">
   <thead>
@@ -1215,11 +1249,11 @@ def print_simple():
     all_cols = r['columns']
     simple_cols = [c for c in SIMPLE_COLS if c in all_cols]
 
-    thead = ''.join(f'<th>{c}</th>' for c in simple_cols)
+    thead = ''.join(f'<th>{_esc(c)}</th>' for c in simple_cols)
     tbody = ''
     for row in data:
         cells = ''.join(
-            f'<td{"" if c != "姓名" else " class=\"name\""} >{row.get(c, "")}</td>'
+            f'<td{"" if c != "姓名" else " class=\"name\""} >{_esc(row.get(c, ""))}</td>'
             for c in simple_cols
         )
         tbody += f'<tr>{cells}</tr>\n'
@@ -1240,7 +1274,7 @@ def print_simple():
 </style>
 </head>
 <body onload="window.print()">
-<div class="school">{school_name}</div>
+<div class="school">{_esc(school_name)}</div>
 <h3>排序結果（簡單版）</h3>
 <table><thead><tr>{thead}</tr></thead><tbody>{tbody}</tbody></table>
 </body></html>'''
@@ -1269,20 +1303,20 @@ def print_all():
     data = json.loads(r['data'])
     all_cols = r['columns']
     simple_cols = [c for c in SIMPLE_COLS if c in all_cols]
-    thead = ''.join('<th>' + c + '</th>' for c in simple_cols)
+    thead = ''.join('<th>' + _esc(c) + '</th>' for c in simple_cols)
     tbody = ''
     for row in data:
         cells = ''
         for c in simple_cols:
             cls = ' class="name"' if c == '姓名' else ''
-            cells += '<td' + cls + '>' + str(row.get(c, '')) + '</td>'
+            cells += '<td' + cls + '>' + _esc(row.get(c, '')) + '</td>'
         tbody += '<tr>' + cells + '</tr>\n'
     audit_section = ''
     if school_name:
         audit_section = '<div class="audit-section">' + _build_audit_print_html(school_name, sn2, yearmonth, inner_only=True) + '</div>'
     page = (
         '<!DOCTYPE html><html lang="zh-TW"><head><meta charset="UTF-8">'
-        '<title>' + school_name + '</title>'
+        '<title>' + _esc(school_name) + '</title>'
         '<style>'
         'body{font-family:"Microsoft JhengHei",Arial,sans-serif;margin:20px;font-size:12px}'
         'h3{color:#1a3a5c;margin-bottom:8px;font-size:13px}'
@@ -1300,7 +1334,7 @@ def print_all():
         '@media print{body{margin:8px}}'
         '</style></head>'
         '<body onload="window.print()">'
-        '<div class="school-name">' + school_name + '</div>'
+        '<div class="school-name">' + _esc(school_name) + '</div>'
         '<h3>排序結果（簡單版）</h3>'
         '<table class="simple-table"><thead><tr>' + thead + '</tr></thead><tbody>' + tbody + '</tbody></table>'
         + audit_section +
@@ -1325,9 +1359,9 @@ def _build_audit_print_html(school_name, sn2, yearmonth, auto_print=False, inner
     inner = (
         '<div class="audit-title">高雄市政府教育局所屬機關學校 待遇稽核情形紀錄表</div>'
         '<div style="font-size:11px;margin-bottom:8px">'
-        '編號：' + (sn2 or '　　　') + '　　'
-        '學校名稱：' + (school_name or '　　　　　　　') + '　　'
-        '稽核月份：' + (yearmonth or '　　　') + '</div>'
+        '編號：' + (_esc(sn2) or '　　　') + '　　'
+        '學校名稱：' + (_esc(school_name) or '　　　　　　　') + '　　'
+        '稽核月份：' + (_esc(yearmonth) or '　　　') + '</div>'
         '<table class="audit-tbl">'
         '<thead>'
         '<tr>'
@@ -1394,7 +1428,7 @@ def _build_audit_print_html(school_name, sn2, yearmonth, auto_print=False, inner
     onload = ' onload="window.print()"' if auto_print else ''
     return (
         '<!DOCTYPE html><html lang="zh-TW"><head><meta charset="UTF-8">'
-        '<title>稽核表－' + school_name + '</title>'
+        '<title>稽核表－' + _esc(school_name) + '</title>'
         '<style>'
         'body{font-family:"Microsoft JhengHei",Arial,sans-serif;margin:20px;font-size:12px}'
         '.audit-title{text-align:center;font-size:14px;font-weight:bold;margin:10px 0 8px}'
