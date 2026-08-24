@@ -197,7 +197,7 @@ tbody td.name-col{text-align:left;font-weight:600}
       <span>排序<b id="c-sorts">—</b></span>
       <span>比對<b id="c-compares">—</b></span>
     </div>
-    系統版本：v1.2　│　115 年度適用
+    系統版本：v1.3.1　│　115 年度適用
   </div>
 </div>
 
@@ -214,7 +214,8 @@ tbody td.name-col{text-align:left;font-weight:600}
           </div>
           <div class="upload-block-body">
             <div class="upload-desc">
-              包含 <span class="em">input</span> 工作表，欄位：序號、姓名。<br>
+              包含 <span class="em">input</span> 工作表，欄位：序號、姓名、身分證字號（同名者必填）。<br>
+              檔名可自行命名；優先讀取 <span class="em">input</span> 工作表，找不到時自動改讀第一個工作表。<br>
               請依薪資清冊正確順序填入，每月人員異動時更新。<br>
               支援格式：<span class="em">.xlsx　.xls</span>
             </div>
@@ -272,7 +273,7 @@ tbody td.name-col{text-align:left;font-weight:600}
         </div>
       </div>
       <div class="hint-box">
-        <strong>※ 注意：</strong>固定清冊檔的「姓名」欄位須與 AF 資料檔完全一致（含全名、不可有空格），系統以姓名進行比對。若格式不確定，請先下載右上角範例格式參考。
+        <strong>※ 注意：</strong>一般人員以姓名配對；偵測到同名同姓時，該姓名群組會改用身分證字號配對，缺少證號即停止排序。姓名仍須與 AF 資料檔完全一致（含全名、不可有空格）。
       </div>
     </div>
   </div>

@@ -5,6 +5,7 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 import io, os, json, re, tempfile, subprocess
 from docx import Document
 from docx.oxml.ns import qn
+from collections import Counter, defaultdict
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
@@ -22,6 +23,8 @@ NUM_COLS = {'清冊序號', '總金額', '支領數額', '待遇差額', '補發
             '總金額.1', '支領數額.1', '待遇差額.1', '補發金額.1',
             '總金額.2', '支領數額.2', '待遇差額.2', '補發金額.2',
             '總金額.3', '支領數額.3', '待遇差額.3', '補發金額.3'}
+
+PERSON_ID_COLS = ('身分證字號', '身分證統一編號', '身分證')
 
 # ── PDF 比對：見 paycheck.py ──
 import paycheck
@@ -314,11 +317,192 @@ def lookup_school(sn1):
     return row.iloc[0]['school'], row.iloc[0]['sn2']
 
 
-def read_sheet(file_bytes, filename, sheet_name):
+def read_sheet(file_bytes, filename, sheet_name, fallback_to_first=False):
     ext = os.path.splitext(filename)[1].lower()
     buf = io.BytesIO(file_bytes)
     engine = 'xlrd' if ext == '.xls' else 'openpyxl'
-    return pd.read_excel(buf, sheet_name=sheet_name, engine=engine, dtype=str, header=0)
+    try:
+        return pd.read_excel(buf, sheet_name=sheet_name, engine=engine, dtype=str, header=0)
+    except ValueError as exc:
+        if isinstance(sheet_name, str) and 'Worksheet named' in str(exc):
+            if fallback_to_first:
+                workbook = pd.ExcelFile(io.BytesIO(file_bytes), engine=engine)
+                if not workbook.sheet_names:
+                    raise ValueError('固定清冊沒有可讀取的工作表') from exc
+                first_sheet = workbook.sheet_names[0]
+                result = pd.read_excel(
+                    io.BytesIO(file_bytes), sheet_name=0, engine=engine, dtype=str, header=0
+                )
+                result.attrs['fallback_sheet'] = first_sheet
+                return result
+            raise ValueError(
+                f'固定清冊找不到「{sheet_name}」工作表。檔名可以自行命名，'
+                f'但 Excel 底部的工作表分頁必須命名為 {sheet_name}'
+            ) from exc
+        raise
+
+
+def _person_id_column(df):
+    """回傳資料中可用的身分證欄位名稱。"""
+    return next((col for col in PERSON_ID_COLS if col in df.columns), None)
+
+
+def _normalize_person_id(value):
+    """身分證配對時忽略大小寫與空白，但不限制證號種類。"""
+    if pd.isna(value):
+        return ''
+    return re.sub(r'\s+', '', str(value)).upper()
+
+
+def _person_label(name, person_id=''):
+    """錯誤／警告只顯示末四碼，避免在畫面上完整揭露身分證。"""
+    return f'{name}（身分證末四碼 {person_id[-4:]}）' if person_id else name
+
+
+def sort_af_by_roster(roster_df, af_df):
+    """
+    依固定清冊排序 AF：
+    - 姓名唯一時沿用姓名配對。
+    - 任一來源出現無法只靠姓名區分的同名資料時，該姓名群組改用身分證配對。
+    """
+    roster_df = roster_df.copy()
+    af_df = af_df.copy()
+    roster_df.columns = [str(c).strip() for c in roster_df.columns]
+    af_df.columns = [str(c).strip() for c in af_df.columns]
+
+    missing_roster = [col for col in ('序號', '姓名') if col not in roster_df.columns]
+    if missing_roster:
+        raise KeyError('固定清冊缺少欄位：' + '、'.join(missing_roster))
+    if '姓名' not in af_df.columns:
+        raise KeyError('AF 缺少欄位：姓名')
+
+    roster_id_col = _person_id_column(roster_df)
+    af_id_col = _person_id_column(af_df)
+    if not af_id_col:
+        raise KeyError('AF 缺少欄位：身分證字號')
+
+    roster_cols = ['序號', '姓名'] + ([roster_id_col] if roster_id_col else [])
+    roster = roster_df[roster_cols].copy()
+    roster['姓名'] = roster['姓名'].map(
+        lambda value: '' if pd.isna(value) else str(value).strip()
+    )
+    roster['序號'] = pd.to_numeric(roster['序號'], errors='coerce')
+    roster = roster.dropna(subset=['序號'])
+    roster = roster[roster['姓名'] != ''].copy()
+    roster['_match_id'] = (
+        roster[roster_id_col].map(_normalize_person_id) if roster_id_col else ''
+    )
+    roster = roster.sort_values('序號', kind='stable').reset_index(drop=True)
+    if roster.empty:
+        raise ValueError('固定清冊的 input 工作表沒有可用的人員資料')
+
+    af_df['姓名'] = af_df['姓名'].map(
+        lambda value: '' if pd.isna(value) else str(value).strip()
+    )
+    af_df['_match_id'] = af_df[af_id_col].map(_normalize_person_id)
+    af_original_cols = [col for col in af_df.columns if col != '_match_id']
+
+    roster_name_counts = Counter(roster['姓名'])
+    duplicate_names = {name for name, count in roster_name_counts.items() if count > 1}
+
+    # AF 同一人可能因不同加給而有多列；同名但身分證相同仍視為同一人。
+    # 若同名列含多個身分證，或多列中有空白證號，就必須進入證號配對模式。
+    for name, group in af_df[af_df['姓名'] != ''].groupby('姓名', sort=False):
+        ids = [person_id for person_id in group['_match_id'] if person_id]
+        if len(set(ids)) > 1 or (len(group) > 1 and len(ids) != len(group)):
+            duplicate_names.add(name)
+
+    if duplicate_names and not roster_id_col:
+        names = '、'.join(sorted(duplicate_names))
+        raise ValueError(
+            f'偵測到同名同姓人員：{names}。請在固定清冊新增「身分證字號」欄，'
+            '並填寫這些同名人員的證號後再上傳'
+        )
+
+    for name in sorted(duplicate_names):
+        roster_group = roster[roster['姓名'] == name]
+        af_group = af_df[af_df['姓名'] == name]
+
+        if not roster_group.empty and (roster_group['_match_id'] == '').any():
+            raise ValueError(f'同名同姓人員「{name}」在固定清冊缺少身分證字號')
+        if not af_group.empty and (af_group['_match_id'] == '').any():
+            raise ValueError(f'同名同姓人員「{name}」在 AF 資料缺少身分證字號')
+
+        roster_ids = roster_group['_match_id']
+        duplicate_ids = roster_ids[roster_ids.duplicated(keep=False)].unique().tolist()
+        if duplicate_ids:
+            raise ValueError(
+                f'固定清冊中同名人員「{name}」使用了重複的身分證字號，請確認資料'
+            )
+
+    af_by_name = defaultdict(list)
+    af_by_name_id = defaultdict(list)
+    for idx, row in af_df.iterrows():
+        af_by_name[row['姓名']].append(idx)
+        af_by_name_id[(row['姓名'], row['_match_id'])].append(idx)
+
+    sorted_rows = []
+    matched_af_rows = set()
+    not_found = []
+    matched_duplicate_names = set()
+
+    for _, roster_row in roster.iterrows():
+        name = roster_row['姓名']
+        person_id = roster_row['_match_id']
+        if name in duplicate_names:
+            matches = af_by_name_id.get((name, person_id), [])
+            if matches:
+                matched_duplicate_names.add(name)
+        else:
+            matches = af_by_name.get(name, [])
+
+        unmatched = [idx for idx in matches if idx not in matched_af_rows]
+        if not unmatched:
+            not_found.append(_person_label(name, person_id if name in duplicate_names else ''))
+            continue
+
+        seq = int(roster_row['序號'])
+        for idx in unmatched:
+            row = af_df.loc[idx, af_original_cols].copy()
+            row['清冊序號'] = seq
+            sorted_rows.append(row)
+            matched_af_rows.add(idx)
+
+    extra_seq = len(roster) + 1
+    extra_people = []
+    for idx, af_row in af_df.iterrows():
+        if idx in matched_af_rows:
+            continue
+        row = af_row[af_original_cols].copy()
+        row['清冊序號'] = extra_seq
+        sorted_rows.append(row)
+        label = _person_label(
+            af_row['姓名'],
+            af_row['_match_id'] if af_row['姓名'] in duplicate_names else '',
+        )
+        if label not in extra_people:
+            extra_people.append(label)
+
+    result_df = pd.DataFrame(sorted_rows)
+    if result_df.empty:
+        result_df = pd.DataFrame(columns=['清冊序號'] + af_original_cols)
+    else:
+        cols = result_df.columns.tolist()
+        cols.remove('清冊序號')
+        result_df = result_df[['清冊序號'] + cols].reset_index(drop=True)
+
+    warnings = []
+    if not_found:
+        warnings.append('清冊中以下人員在 AF 找不到對應：' + '、'.join(not_found))
+    if extra_people:
+        warnings.append('AF 中以下人員不在清冊內，已附加至末尾：' + '、'.join(extra_people))
+    if matched_duplicate_names:
+        warnings.append(
+            '同名同姓人員已依身分證字號正確配對：'
+            + '、'.join(sorted(matched_duplicate_names))
+        )
+
+    return result_df, warnings
 
 
 def build_excel(data, columns):
@@ -457,67 +641,17 @@ def process():
     af_bytes = af_f.read()
 
     try:
-        roster_df = read_sheet(roster_bytes, roster_f.filename, 'input')
-        roster_df.columns = [str(c).strip() for c in roster_df.columns]
-        roster_df = roster_df[['序號', '姓名']].copy()
-        roster_df['姓名'] = roster_df['姓名'].str.strip()
-        roster_df['序號'] = pd.to_numeric(roster_df['序號'], errors='coerce')
-        roster_df = roster_df.dropna(subset=['序號', '姓名'])
-        roster_df = roster_df[roster_df['姓名'] != '']
-        roster_df = roster_df.sort_values('序號')
-        dup_roster = roster_df[roster_df.duplicated('姓名', keep=False)]['姓名'].unique().tolist()
-        ordered_names = roster_df['姓名'].tolist()
-        name_to_seq = {row['姓名']: int(row['序號']) for _, row in roster_df.iterrows()}
-
+        roster_df = read_sheet(
+            roster_bytes, roster_f.filename, 'input', fallback_to_first=True
+        )
+        fallback_sheet = roster_df.attrs.get('fallback_sheet')
         af_df = read_sheet(af_bytes, af_f.filename, 0)
-        af_df.columns = [str(c).strip() for c in af_df.columns]
-        af_df['姓名'] = af_df['姓名'].str.strip()
-
-        from collections import defaultdict
-        af_map = defaultdict(list)
-        for _, row in af_df.iterrows():
-            af_map[row['姓名']].append(row)
-
-        sorted_rows = []
-        not_found = []
-        found = set()
-
-        for name in ordered_names:
-            if name in af_map:
-                seq = name_to_seq[name]
-                for row in af_map[name]:
-                    r = row.copy()
-                    r['清冊序號'] = seq
-                    sorted_rows.append(r)
-                found.add(name)
-            else:
-                not_found.append(name)
-
-        extra_seq = len(ordered_names) + 1
-        extra_names = []
-        for _, row in af_df.iterrows():
-            if row['姓名'] not in found:
-                r = row.copy()
-                r['清冊序號'] = extra_seq
-                sorted_rows.append(r)
-                if row['姓名'] not in extra_names:
-                    extra_names.append(row['姓名'])
-
-        result_df = pd.DataFrame(sorted_rows).reset_index(drop=True)
-
-        cols = result_df.columns.tolist()
-        if '清冊序號' in cols:
-            cols.remove('清冊序號')
-        cols = ['清冊序號'] + cols
-        result_df = result_df[cols]
-
-        warnings = []
-        if not_found:
-            warnings.append('清冊中以下人員在 AF 找不到對應：' + '、'.join(not_found))
-        if extra_names:
-            warnings.append('AF 中以下人員不在清冊內，已附加至末尾：' + '、'.join(extra_names))
-        if dup_roster:
-            warnings.append('清冊中以下姓名出現多次，請確認是重複登打或同名不同人：' + '、'.join(dup_roster))
+        result_df, warnings = sort_af_by_roster(roster_df, af_df)
+        if fallback_sheet:
+            warnings.insert(
+                0,
+                f'固定清冊找不到 input 工作表，已自動改讀第一個工作表「{fallback_sheet}」',
+            )
 
         sn1, yearmonth = parse_af_filename(af_f.filename)
         school_name, sn2 = lookup_school(sn1)
@@ -544,6 +678,8 @@ def process():
 
     except KeyError as e:
         return jsonify({'error': '找不到欄位或工作表：' + str(e) + '，請確認檔案格式與範例相符'}), 400
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
     except Exception as e:
         return jsonify({'error': '處理錯誤：' + str(e)}), 500
 
