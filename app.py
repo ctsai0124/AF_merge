@@ -896,6 +896,113 @@ def download_template():
                      mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 
+# ── 範例資料（供沒有真實檔案的人試用「套用範例資料」按鈕）──────────
+# 走跟真實上傳完全相同的 /process 流程與 compute_category_audit()，
+# 不另外寫捷徑；固定清冊/AF 內容都是虛構人員、虛構「示範國小」。
+# 涵蓋情境：
+#   seq 1-6：清冊人員類別 roll-up 後跟 AF 薪俸表別判定一致（正常案例，
+#            涵蓋官方五類：教育人員x2／職員／技工工友／聘用人員／約僱人員）
+#   seq 7-8：刻意設計的鉤稽不一致，示範清單真的會抓出問題
+#   seq 9：故意不預先分類，示範「待指定人員類別」下拉選單存檔流程
+#   seq 10：AF 端故意留空身分證字號，示範「無法記憶類別、fallback 用
+#           AF 表別判定」這個邊界情況
+# sn1 用 000000000X（school.xlsx 裡沒有任何學校用這個代碼開頭，確認
+# 過不會誤配到真實學校），所以 school_name 會是空字串，前端顯示區塊
+# 另外用純前端文字覆蓋成「示範國小」，不影響後端邏輯本身。
+SAMPLE_PEOPLE = [
+    {'seq': 1, 'name': '王小明', 'id': 'Z900000001', 'af_code': 'A00011',
+     'category': '教師', 'dept': '教務處', 'duty_code': 'C1014', 'duty_amt': 4000},
+    {'seq': 2, 'name': '陳雅婷', 'id': 'Z900000002', 'af_code': 'A00011',
+     'category': '主任', 'dept': '學生事務處', 'duty_code': 'C1009', 'duty_amt': 10010},
+    {'seq': 3, 'name': '林秀琴', 'id': 'Z900000003', 'af_code': 'A0001',
+     'category': '幹事', 'dept': '總務處', 'duty_code': 'C1001', 'duty_amt': 5930},
+    {'seq': 4, 'name': '張家豪', 'id': 'Z900000004', 'af_code': 'A0003',
+     'category': '工友', 'dept': '總務處', 'duty_code': '', 'duty_amt': 0},
+    {'seq': 5, 'name': '陳志豪', 'id': 'Z900000005', 'af_code': 'A0004',
+     'category': '聘用人員', 'dept': '圖書館', 'duty_code': '', 'duty_amt': 0},
+    {'seq': 6, 'name': '黃美玲', 'id': 'Z900000006', 'af_code': 'A0005',
+     'category': '約僱', 'dept': '輔導室', 'duty_code': '', 'duty_amt': 0},
+    {'seq': 7, 'name': '吳建志', 'id': 'Z900000007', 'af_code': 'A0003',
+     'category': '教師', 'dept': '總務處', 'duty_code': '', 'duty_amt': 0},
+    {'seq': 8, 'name': '劉俊宏', 'id': 'Z900000008', 'af_code': 'A00011',
+     'category': '駕駛', 'dept': '總務處', 'duty_code': 'C1014', 'duty_amt': 4000},
+    {'seq': 9, 'name': '蔡淑芬', 'id': 'Z900000009', 'af_code': 'A0001',
+     'category': None, 'dept': '人事室', 'duty_code': '', 'duty_amt': 0},
+    {'seq': 10, 'name': '李文彬', 'id': '', 'af_code': 'A0003',
+     'category': None, 'dept': '總務處', 'duty_code': '', 'duty_amt': 0},
+]
+
+SAMPLE_SALARY_AMOUNT = {
+    'A00011': 55690, 'A0001': 44970, 'A0003': 32000, 'A0004': 30000, 'A0005': 28000,
+}
+SAMPLE_PROF_AMOUNT = {
+    'A00011': 35780, 'A0001': 26830, 'A0003': 18000, 'A0004': 16000, 'A0005': 15000,
+}
+SAMPLE_PROF_CODE = {
+    'A00011': 'B2008', 'A0001': 'B10021', 'A0003': 'B10021', 'A0004': 'B10021', 'A0005': 'B10021',
+}
+SAMPLE_AF_FILENAME = 'AF範例資料_000000000X_11509範例.xlsx'
+
+
+def build_sample_roster_xlsx():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = 'input'
+    ws.append(['序號', '姓名', '身分證字號'])
+    for p in SAMPLE_PEOPLE:
+        ws.append([p['seq'], p['name'], p['id']])
+    out = io.BytesIO()
+    wb.save(out)
+    out.seek(0)
+    return out
+
+
+def build_sample_af_xlsx():
+    cols = ['單位', '身分證字號', '姓名', '薪俸表別', '總金額', '支領數額', '待遇差額', '補發金額',
+            '專業加給表別', '總金額.1', '支領數額.1', '待遇差額.1', '補發金額.1', '增支',
+            '職務加給表別', '總金額.2', '支領數額.2', '待遇差額.2', '補發金額.2']
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(cols)
+    for p in SAMPLE_PEOPLE:
+        salary = SAMPLE_SALARY_AMOUNT.get(p['af_code'], 30000)
+        prof = SAMPLE_PROF_AMOUNT.get(p['af_code'], 15000)
+        prof_code = SAMPLE_PROF_CODE.get(p['af_code'], 'B10021')
+        ws.append([
+            p['dept'], p['id'], p['name'], p['af_code'], salary, salary, 0, 0,
+            prof_code, prof, prof, 0, 0, 0,
+            p['duty_code'], p['duty_amt'], p['duty_amt'], 0, 0,
+        ])
+    out = io.BytesIO()
+    wb.save(out)
+    out.seek(0)
+    return out
+
+
+@app.route('/sample-data/roster')
+def sample_data_roster():
+    out = build_sample_roster_xlsx()
+    return send_file(out, as_attachment=True, download_name='範例固定清冊.xlsx',
+                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+
+@app.route('/sample-data/af')
+def sample_data_af():
+    out = build_sample_af_xlsx()
+    return send_file(out, as_attachment=True, download_name=SAMPLE_AF_FILENAME,
+                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+
+@app.route('/sample-data/assignments')
+def sample_data_assignments():
+    """範例資料裡預先設計好『已分類』的那幾筆人員類別（給前端在套用範例資料、
+    跑完 /process 後，用真正的 /categories/save 端點模擬示範），
+    姓名 9（蔡淑芬）與 10（李文彬）故意不在這裡，用來示範「待指定」流程。"""
+    return jsonify({
+        p['name']: p['category'] for p in SAMPLE_PEOPLE if p['category']
+    })
+
+
 @app.route('/download-standalone')
 def download_standalone():
     path = os.path.join(app.root_path, 'static', 'AF欄位調整工具_單機d槽版.xlsm')

@@ -276,6 +276,13 @@ tbody td.name-col{text-align:left;font-weight:600}
           </div>
         </div>
       </div>
+      <div class="action-bar" style="margin-top:14px">
+        <button class="btn-print" type="button" id="btn-sample" onclick="loadSampleData()">🎲 套用範例資料試用看看</button>
+        <span style="font-size:11px;color:#888">還沒有固定清冊／AF 資料檔嗎？點這裡一鍵套用範例資料（虛構人員），立即體驗排序與人員類別鉤稽功能。</span>
+      </div>
+      <div class="warn-msg" id="sample-banner-upload" style="display:none;margin-top:10px">
+        🎲 目前顯示為<strong>範例資料</strong>（虛構人員、虛構「示範國小」，非真實資料），僅供試用介面與人員類別鉤稽功能。請上傳您實際的固定清冊與 AF 資料檔，即可自動取代範例資料。
+      </div>
       <div class="hint-box">
         <strong>※ 注意：</strong>一般人員以姓名配對；偵測到同名同姓時，該姓名群組會改用身分證字號配對，缺少證號即停止排序。姓名仍須與 AF 資料檔完全一致（含全名、不可有空格）。
       </div>
@@ -325,6 +332,9 @@ tbody td.name-col{text-align:left;font-weight:600}
       <div class="result-top">
         <div class="r-stat">比對完成，共 <strong id="stat-total">0</strong> 筆人員</div>
         <button class="btn-reset" onclick="resetAll()">重新上傳</button>
+      </div>
+      <div class="warn-msg" id="sample-banner-result" style="display:none">
+        🎲 以下為<strong>範例資料</strong>的排序與鉤稽結果（假資料），並非您的正式資料，請勿誤用或下載當成正式紀錄。上傳實際檔案後即會自動取代。
       </div>
       <!-- 學校名稱標題 -->
       <div class="school-title-row">
@@ -395,6 +405,14 @@ tbody td.name-col{text-align:left;font-weight:600}
 <script>
 const files = {roster: null, af: null, pdf: null};
 let simpleCols = [];
+let isSampleDataActive = false;
+
+function updateSampleBanners() {
+  const b1 = document.getElementById('sample-banner-upload');
+  const b2 = document.getElementById('sample-banner-result');
+  if (b1) b1.style.display = isSampleDataActive ? 'block' : 'none';
+  if (b2) b2.style.display = isSampleDataActive ? 'block' : 'none';
+}
 
 function onDragOver(e, key) {
   e.preventDefault();
@@ -423,6 +441,12 @@ function setFile(key, f) {
   files[key] = f;
   document.getElementById('drop-' + key).classList.add('done');
   document.getElementById('name-' + key).textContent = '✔ ' + f.name;
+  // 使用者自己選了真實檔案（不論是不是套用範例資料後又手動換掉），
+  // 就不再視為範例資料模式，避免混淆。
+  if ((key === 'roster' || key === 'af') && isSampleDataActive) {
+    isSampleDataActive = false;
+    updateSampleBanners();
+  }
   checkReady();
 }
 function checkReady() {
@@ -463,23 +487,85 @@ async function doProcess() {
         msgBox.appendChild(div);
       }
 
-      // 顯示學校名稱標題
+      // 顯示學校名稱標題（範例資料的 sn1 刻意不對應到任何真實學校，
+      // 這裡純前端補顯示「示範國小」字樣，後端 school_name 仍是空字串）
       const schoolEl = document.getElementById('school-title');
-      schoolEl.textContent = data.school_name || '';
+      schoolEl.textContent = data.school_name || (isSampleDataActive ? '示範國小（範例資料）' : '');
 
-      // 稽核相關按鈕：有學校資料才顯示
+      // 稽核相關按鈕：有學校資料才顯示（範例資料沒有對應真實學校，不顯示稽核表下載）
       const hasSchool = !!data.school_name;
       document.getElementById('btn-audit').style.display = hasSchool ? 'inline-block' : 'none';
 
       renderTable(data.columns, data.preview, data.total);
       renderCategoryPanel(data.category);
       setCounts(data.counts);
+      updateSampleBanners();
+
+      // 範例資料：自動模擬「Leo已經為部分人員存過人員類別」，讓使用者一套用
+      // 就能立刻看到「已一致」「鉤稽抓到不一致」「待指定」三種情境同時呈現，
+      // 走的是跟手動存檔完全相同的 /categories/save 端點，不是另外算好塞資料。
+      if (isSampleDataActive) {
+        await applySampleCategoryAssignments(data.category);
+      }
     }
   } catch(e) {
     setMsg('err', '連線失敗：' + e.message);
   } finally {
     document.getElementById('btn-go').disabled = false;
     document.getElementById('loader').style.display = 'none';
+  }
+}
+
+/* ── 套用範例資料 ── */
+async function loadSampleData() {
+  const btn = document.getElementById('btn-sample');
+  btn.disabled = true;
+  const origText = btn.textContent;
+  btn.textContent = '套用中...';
+  try {
+    const [rosterBlob, afBlob] = await Promise.all([
+      fetch('/sample-data/roster').then(r => { if (!r.ok) throw new Error('無法取得範例固定清冊'); return r.blob(); }),
+      fetch('/sample-data/af').then(r => { if (!r.ok) throw new Error('無法取得範例 AF 資料'); return r.blob(); }),
+    ]);
+    // 刻意包成跟使用者自己選檔完全一樣的 File 物件，走同一個 files/doProcess 流程，
+    // 不另外寫一條假資料捷徑路徑。
+    files.roster = new File([rosterBlob], '範例固定清冊.xlsx', {type: rosterBlob.type});
+    files.af = new File([afBlob], 'AF範例資料_000000000X_11509範例.xlsx', {type: afBlob.type});
+    document.getElementById('drop-roster').classList.add('done');
+    document.getElementById('name-roster').textContent = '✔ ' + files.roster.name + '（範例）';
+    document.getElementById('drop-af').classList.add('done');
+    document.getElementById('name-af').textContent = '✔ ' + files.af.name + '（範例）';
+    isSampleDataActive = true;
+    updateSampleBanners();
+    checkReady();
+    await doProcess();
+  } catch (e) {
+    alert('套用範例資料失敗：' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = origText;
+  }
+}
+
+async function applySampleCategoryAssignments(category) {
+  if (!category || !category.unassigned || !category.unassigned.length) return;
+  try {
+    const res = await fetch('/sample-data/assignments');
+    const nameToCategory = await res.json();
+    const assignments = {};
+    category.unassigned.forEach(item => {
+      const cat = nameToCategory[item['姓名']];
+      if (cat) assignments[item.index] = cat;
+    });
+    if (!Object.keys(assignments).length) return;
+    const saveRes = await fetch('/categories/save', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({assignments})
+    });
+    const saveData = await saveRes.json();
+    if (saveData.category) renderCategoryPanel(saveData.category);
+  } catch (e) {
+    console.error('範例人員類別自動示範失敗：', e);
   }
 }
 
@@ -702,6 +788,8 @@ function resetAll() {
   document.getElementById('category-summary').innerHTML = '';
   document.getElementById('category-unassigned').innerHTML = '';
   document.getElementById('category-mismatch').innerHTML = '';
+  isSampleDataActive = false;
+  updateSampleBanners();
   checkReady();
 }
 
