@@ -321,7 +321,7 @@ tbody td.name-col{text-align:left;font-weight:600}
         </div>
         <div class="act-box act-box-full">
           <h4>③ 產製互核結果表</h4>
-          <div class="d">依「薪資互核結果表」官方範本，一次產出單列＋表頭的 Excel（機關單位／各類人員類別／各表別代碼與金額，並自動帶入薪資清冊 PDF 解析出的金額、自動建議互核相符 Y/N，差異原因等留白供人工填寫）。<br>需上傳：固定清冊檔＋AF 資料檔＋薪資清冊 PDF。若 PDF 無法自動辨識，右半邊金額與互核相符欄會留空，仍可下載後自行填入。</div>
+          <div class="d">依「薪資互核結果表」官方範本，一次產出單列＋表頭的 Excel（機關單位／各類人員類別／各表別代碼與金額，差異原因等留白供人工填寫）。<br>需上傳：固定清冊檔＋AF 資料檔（必填）。薪資清冊 PDF 為<strong>選填</strong>：有上傳就會解析 PDF 金額填入右半邊、自動比對建議 Y/N（若無法辨識則右半邊與 Y/N 留空，仍可下載後自行填入）；<strong>不上傳就直接以 AF 算出的數字同時填入左右兩邊，互核相符自動填 Y</strong>（此時並非真的核對過薪資清冊，只是形式一致，請自行注意）。</div>
           <div class="action-bar">
             <button class="btn-cross" id="btn-cross" onclick="doCrossCheck()" disabled>產製互核結果表</button>
             <div class="loader" id="cross-loader"><div class="spin"></div>產製中...</div>
@@ -467,16 +467,18 @@ function checkReady() {
   document.getElementById('btn-go').disabled = !(files.roster && files.af);
   // 比對：AF + 薪資清冊 PDF
   document.getElementById('btn-cmp').disabled = !(files.af && files.pdf);
-  // 互核結果表：固定清冊 + AF + 薪資清冊 PDF 三個都要
+  // 互核結果表：固定清冊 + AF 必填，薪資清冊 PDF 選填
   const btnCross = document.getElementById('btn-cross');
-  if (btnCross) btnCross.disabled = !(files.roster && files.af && files.pdf);
+  if (btnCross) btnCross.disabled = !(files.roster && files.af);
 }
 
 async function doCrossCheck() {
   const fd = new FormData();
   fd.append('roster', files.roster);
   fd.append('af', files.af);
-  fd.append('salary_pdf', files.pdf);
+  // 薪資清冊 PDF 是選填：使用者這次若沒選 PDF 檔案，就不附上這個欄位，
+  // 後端會直接把 AF 算出的數字同時填入右半邊、互核相符自動填 Y。
+  if (files.pdf) fd.append('salary_pdf', files.pdf);
   const btn = document.getElementById('btn-cross');
   const loader = document.getElementById('cross-loader');
   const msg = document.getElementById('cross-msg');

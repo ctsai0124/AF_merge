@@ -1299,13 +1299,21 @@ def build_cross_check_excel(row_values):
 
 @app.route('/cross-check', methods=['POST'])
 def cross_check():
-    """一次上傳固定清冊＋AF＋薪資清冊PDF，產出互核結果表(單列+表頭)的Excel。"""
-    for key, label in (('roster', '固定清冊'), ('af', 'AF 資料檔'), ('salary_pdf', '薪資清冊 PDF')):
+    """一次上傳固定清冊＋AF＋(選填)薪資清冊PDF，產出互核結果表(單列+表頭)的Excel。
+
+    薪資清冊 PDF 是選填（Leo 明確要求）：使用者可以選擇不核對薪資清冊，
+    這種情況下右半邊(L~O)直接照抄左半邊 AF 算出來的總計數字，Q 欄直接
+    填 Y（形式上兩邊一致，但這不是真的核對過，只是沒有另一份資料可比對）。
+    """
+    for key, label in (('roster', '固定清冊'), ('af', 'AF 資料檔')):
         if key not in request.files or not request.files[key].filename:
             return jsonify({'error': f'請上傳{label}'}), 400
 
-    roster_f, af_f, pdf_f = request.files['roster'], request.files['af'], request.files['salary_pdf']
-    roster_bytes, af_bytes, pdf_bytes = roster_f.read(), af_f.read(), pdf_f.read()
+    roster_f, af_f = request.files['roster'], request.files['af']
+    roster_bytes, af_bytes = roster_f.read(), af_f.read()
+    pdf_f = request.files.get('salary_pdf')
+    has_pdf = bool(pdf_f and pdf_f.filename)
+    pdf_bytes = pdf_f.read() if has_pdf else b''
 
     try:
         roster_df = read_sheet(roster_bytes, roster_f.filename, 'input', fallback_to_first=True)
@@ -1337,35 +1345,43 @@ def cross_check():
     except Exception as e:
         return jsonify({'error': '處理固定清冊／AF 檔時發生錯誤：' + str(e)}), 500
 
-    # PDF 辨識成功與否不當作能否產出這張表的門檻（Leo 明確要求）：就算掃描檔
-    # 沒有文字層、解析拋例外、或解析不出任何人，右半邊(L~O)就留空、Q 也留空
-    # 讓人工判斷，其餘照樣正常產出、可以下載，不整個擋住。責任在使用者身上，
-    # 他們送出前本來就要自己核對/修正好數字。
+    # 情境一：使用者選擇不上傳薪資清冊 PDF（不核對）——直接把左半邊 AF
+    # 算出來的總計數字照抄到右半邊，形式上兩邊一致，Q 直接填 Y。這不是真
+    # 的核對過，只是沒有另一份資料可比對；Leo 明確要求要提供這個選項。
+    #
+    # 情境二：使用者有上傳 PDF，但 PDF 辨識成功與否不當作能否產出這張表
+    # 的門檻——就算掃描檔沒有文字層、解析拋例外、或解析不出任何人，右半
+    # 邊(L~O)就留空、Q 也留空讓人工判斷，其餘照樣正常產出、可以下載，不
+    # 整個擋住。責任在使用者身上，他們送出前本來就要自己核對/修正好數字。
     pdf_warning = None
     pdf_people = []
-    if not paycheck.has_text_layer(pdf_bytes):
-        pdf_warning = '薪資清冊 PDF 是掃描圖檔，系統無法自動辨識文字，右半邊金額請自行填入後再送出。'
+    if not has_pdf:
+        pdf_salary, pdf_prof, pdf_duty, pdf_region = salary_total, prof_total, duty_total, region_total
+        q_value = 'Y'
     else:
-        try:
-            pdf_people, _layout = paycheck.parse_pdf(pdf_bytes)
-        except Exception as e:
-            pdf_warning = f'解析薪資清冊 PDF 時發生錯誤（{e}），右半邊金額請自行填入後再送出。'
-            pdf_people = []
-        if not pdf_warning and not pdf_people:
-            pdf_warning = '薪資清冊 PDF 偵測不到表格結構，無法自動算出金額，右半邊金額請自行填入後再送出。'
+        if not paycheck.has_text_layer(pdf_bytes):
+            pdf_warning = '薪資清冊 PDF 是掃描圖檔，系統無法自動辨識文字，右半邊金額請自行填入後再送出。'
+        else:
+            try:
+                pdf_people, _layout = paycheck.parse_pdf(pdf_bytes)
+            except Exception as e:
+                pdf_warning = f'解析薪資清冊 PDF 時發生錯誤（{e}），右半邊金額請自行填入後再送出。'
+                pdf_people = []
+            if not pdf_warning and not pdf_people:
+                pdf_warning = '薪資清冊 PDF 偵測不到表格結構，無法自動算出金額，右半邊金額請自行填入後再送出。'
 
-    if pdf_people:
-        pdf_salary = sum(p.get('薪俸', 0) for p in pdf_people)
-        pdf_prof = sum(p.get('專業加給', 0) for p in pdf_people)
-        pdf_duty = sum(p.get('主管加給', 0) + p.get('導師特教', 0) for p in pdf_people)
-        pdf_region = sum(p.get('地域加給', 0) for p in pdf_people)
-        match = (salary_total == pdf_salary and prof_total == pdf_prof
-                 and duty_total == pdf_duty and region_total == pdf_region)
-        q_value = 'Y' if match else 'N'
-    else:
-        # 辨識不出人員資料：右半邊留空、Q 留空，不猜測、不硬填 0。
-        pdf_salary = pdf_prof = pdf_duty = pdf_region = ''
-        q_value = ''
+        if pdf_people:
+            pdf_salary = sum(p.get('薪俸', 0) for p in pdf_people)
+            pdf_prof = sum(p.get('專業加給', 0) for p in pdf_people)
+            pdf_duty = sum(p.get('主管加給', 0) + p.get('導師特教', 0) for p in pdf_people)
+            pdf_region = sum(p.get('地域加給', 0) for p in pdf_people)
+            match = (salary_total == pdf_salary and prof_total == pdf_prof
+                     and duty_total == pdf_duty and region_total == pdf_region)
+            q_value = 'Y' if match else 'N'
+        else:
+            # 辨識不出人員資料：右半邊留空、Q 留空，不猜測、不硬填 0。
+            pdf_salary = pdf_prof = pdf_duty = pdf_region = ''
+            q_value = ''
 
     row_values = [
         1, school_name,
