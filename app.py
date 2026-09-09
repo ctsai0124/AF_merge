@@ -1135,6 +1135,257 @@ def categories_save():
     return jsonify(resp)
 
 
+# ── 新增：互核結果表（固定清冊＋AF＋薪資清冊PDF 三檔合一產製）──────
+# Leo 提供的官方「薪資互核結果表範本」是每月要交的正式報表，一列＝
+# 一個機關本次的整體統計（不是逐人列出）。左半邊（機關單位／各類人員
+# 類別／各表別代碼與人數／各項總額）從固定清冊＋AF資料算，走的正是
+# sort_af_by_roster()＋compute_category_audit() 這兩個既有函式，不重
+# 新發明一套；右半邊（薪資清冊紙本各項總額）從 paycheck.parse_pdf()
+# 解析出的人員清單加總，地域加給其實 FIELD_ALIAS 早就有擷取
+# （parse_pdf 內部會把 PDF 表格裡「地域加給」欄位的值存進每人的
+# p['地域加給']，只是原本 compare() 用的 FIELDS 沒把它列進逐人比對
+# 項目），這裡直接加總即可，不需要改動既有的 PDF 解析邏輯本身。
+# 差異原因／互核未符情形／備註三欄留白給人工填；互核相符(Y/N)會依兩邊
+# 金額是否一致自動填入建議值，但只是一般儲存格，Leo下載後仍可自行覆蓋。
+# 這是全新、獨立的路由，刻意不更動既有 /process（排序）與 /compare-pdf
+# （單獨比對）這兩條既有流程的任何程式碼。
+
+CROSS_CHECK_HEADERS_ROW2 = [
+    '序號', '機關單位', '待遇資料校對清冊(WebHR或AF)', None, None, None, None, None, None, None, None,
+    '薪資清冊(出納紙本)', None, None, None, '差異原因', '互核相符(Y/N)', '互核未符情形', '備註',
+]
+CROSS_CHECK_HEADERS_ROW3 = [
+    None, None, '各類人員類別', '薪俸表別', '薪俸總額', '專業加給表別', '專業加給總額',
+    '職務加給表別', '職務加給總額', '地域加給表別', '地域加給總額',
+    '薪俸總額', '專業加給總額', '職務加給總額', '地域加給總額', None, None, None, None,
+]
+
+# 原始官方範本 1dc672fc-_______.xlsx 的 A6:S15（合併儲存格）填寫說明，
+# 逐字保留、原樣照抄，Leo 要求這份說明文字必須一起附在產出的表格上，
+# 不能因為套版/自動填值就被清掉。
+CROSS_CHECK_NOTES = (
+    '說明 :\n'
+    '1. 機關單位 : 請填寫機關全銜。\n'
+    '2. 待遇資料校對清冊:\n'
+    '   (1)各類人員類別請按不同薪俸表作為區分並填寫人數。(一般人員、教育警察人員、政務人員、職工、約聘僱人員)\n'
+    '   (2)薪俸、專業加給、職務加給(公務人員主管職務加給表、簡任非主管人員比照主管職務核給職務加給表、'
+    '警勤加給、危險加給…等)及地域加給等所有有申請之表別，均請填寫代碼及人數(請至AF系統機關資料設定＞'
+    '機關適用表別設定下載機關適用表別清單，僅需填寫A、B、C、D類表別即可，表別清單請一併提供予校對機關)，'
+    '如有表別未有支領者亦請列，人數即填0人，並於後括號填列未支領原因。\n'
+    '   (3) 薪俸總額 : 待遇資料校對清冊中EXCEL表「薪俸」項目的總額。\n'
+    '   (4) 專業加給總額 : 待遇資料校對清冊中EXCEL表「專業加给」項目的總額。\n'
+    '   (5) 職務加给總額 : 待遇資料校對清冊中EXCEL表「職務加给」項目的總額。\n'
+    '   (6) 地域加給總額 : 待遇資料校對清冊中EXCEL表「地域加给」項目的總額，無則免填。\n'
+    '3. 薪資清冊:\n'
+    '   (1) 薪俸總額 : 薪資清冊有一頁總表列出所有人員薪俸總額或是有分別合計各類人員薪俸總額再加總即可，'
+    '若皆無請自行加總。\n'
+    '   (2) 專業加給總額 :薪資清冊有一頁總表有列出所有人員專業加给總額或是有分別合計各類人員專業加給總額'
+    '再加總即可，若皆無請自行加總。\n'
+    '   (3) 職務加给總額 : 薪資清冊有一頁總表列出所有人員職務加给總額或是有合計職務加給總額，'
+    '若皆無請自行加總。\n'
+    '   (4) 地域加给總額 : 薪資清冊有一頁總表列出所有人員地域加给總額或是有分別合計各類人員地域加給總額'
+    '再加總即可，若皆無請自行加總，無則免填。 \n'
+    '4. 差異原因 : 校對清冊數字和薪資清冊數字差異的原因。\n'
+    '5. 互核相符(Y/N) : 由校對機關填寫，核對各清冊與所填表的資料是否相符，另校對清冊支領表別、人數及支領'
+    '總額和薪資清冊(含差異原因)是否相符。(Y=YES，表示無誤;N=NO，表示有差異，需於互核未符情形敘明)\n'
+    '6. 互核未符情形：由校對機關填寫，敘明核對錯誤之情形。\n'
+    '7. 備註 : 可書寫特別事項。'
+)
+
+
+def _tally_codes(series, sep='：', joiner='\n'):
+    """把一欄裡的代碼（如薪俸表別）計數、格式化成範本裡那種
+    「A0001：30人\\nA0003：5人」多行文字。空白值不計入。"""
+    counts = Counter(str(v).strip() for v in series if str(v).strip())
+    if not counts:
+        return ''
+    return joiner.join(f'{code}{sep}{n}人' for code, n in sorted(counts.items()))
+
+
+def _category_summary_text(summary, official_categories):
+    """把 compute_category_audit() 算出的 summary 轉成範本 C 欄那種
+    「一般人員30人、職工5人、約僱人員4人」文字，只列有人數的類別，
+    依官方五類固定順序（未能判定放最後）。"""
+    order = list(official_categories) + ['未能判定']
+    parts = [f'{cat}{summary[cat]}人' for cat in order if summary.get(cat)]
+    return '、'.join(parts)
+
+
+def _col_sum(records, col):
+    total = 0
+    for row in records:
+        v = row.get(col, '')
+        if v in ('', None):
+            continue
+        try:
+            total += int(float(str(v).replace(',', '')))
+        except (ValueError, TypeError):
+            continue
+    return total
+
+
+def build_cross_check_excel(row_values):
+    """依 Leo 提供的官方範本結構（A1:S1標題、2-3列合併表頭、資料列）
+    產生互核結果表。row_values 是長度19、依 A~S 順序排列的資料列。"""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = '互核結果表'
+
+    hdr_fill = PatternFill('solid', start_color='1a3a5c')
+    hdr_font = Font(bold=True, color='FFFFFF', name='Microsoft JhengHei', size=10)
+    title_font = Font(bold=True, name='Microsoft JhengHei', size=13)
+    center_wrap = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    left_wrap = Alignment(horizontal='left', vertical='center', wrap_text=True)
+    thin = Side(style='thin', color='888888')
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    data_font = Font(name='Microsoft JhengHei', size=10)
+
+    last_col = 19  # A..S
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=last_col)
+    title_cell = ws.cell(row=1, column=1, value='薪資互核結果表')
+    title_cell.font = title_font
+    title_cell.alignment = Alignment(horizontal='center', vertical='center')
+    ws.row_dimensions[1].height = 24
+
+    for ci, val in enumerate(CROSS_CHECK_HEADERS_ROW2, 1):
+        if val is not None:
+            cell = ws.cell(row=2, column=ci, value=val)
+            cell.fill = hdr_fill
+            cell.font = hdr_font
+            cell.alignment = center_wrap
+            cell.border = border
+    for ci, val in enumerate(CROSS_CHECK_HEADERS_ROW3, 1):
+        if val is not None:
+            cell = ws.cell(row=3, column=ci, value=val)
+            cell.fill = hdr_fill
+            cell.font = hdr_font
+            cell.alignment = center_wrap
+            cell.border = border
+    # 套用範本原有的合併儲存格結構
+    for rng in ('C2:K2', 'L2:O2', 'B2:B3', 'A2:A3', 'P2:P3', 'Q2:Q3', 'R2:R3', 'S2:S3'):
+        ws.merge_cells(rng)
+    for ci in range(1, last_col + 1):
+        c = ws.cell(row=2, column=ci)
+        if c.border.left.style is None:
+            c.border = border
+
+    for ci, val in enumerate(row_values, 1):
+        cell = ws.cell(row=4, column=ci, value=val)
+        cell.font = data_font
+        cell.border = border
+        cell.alignment = left_wrap if ci in (3, 4, 6, 8, 10, 16, 17, 19) else center_wrap
+
+    # 官方範本 A6:S15 的填寫說明文字，逐字原樣附在資料列下方（Leo 要求
+    # 不能因為套版被清掉），合併成一大格、靠左對齊、自動換行。
+    notes_row = 5
+    ws.merge_cells(start_row=notes_row, start_column=1, end_row=notes_row, end_column=last_col)
+    notes_cell = ws.cell(row=notes_row, column=1, value=CROSS_CHECK_NOTES)
+    notes_cell.font = Font(name='Microsoft JhengHei', size=9)
+    notes_cell.alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
+    notes_cell.border = border
+    ws.row_dimensions[notes_row].height = 340
+
+    widths = {1: 6, 2: 14, 3: 22, 4: 18, 5: 12, 6: 18, 7: 12, 8: 18, 9: 12,
+              10: 14, 11: 12, 12: 12, 13: 12, 14: 12, 15: 12, 16: 24, 17: 12, 18: 20, 19: 16}
+    for ci, w in widths.items():
+        ws.column_dimensions[openpyxl.utils.get_column_letter(ci)].width = w
+    ws.row_dimensions[4].height = 60
+
+    out = io.BytesIO()
+    wb.save(out)
+    out.seek(0)
+    return out
+
+
+@app.route('/cross-check', methods=['POST'])
+def cross_check():
+    """一次上傳固定清冊＋AF＋薪資清冊PDF，產出互核結果表(單列+表頭)的Excel。"""
+    for key, label in (('roster', '固定清冊'), ('af', 'AF 資料檔'), ('salary_pdf', '薪資清冊 PDF')):
+        if key not in request.files or not request.files[key].filename:
+            return jsonify({'error': f'請上傳{label}'}), 400
+
+    roster_f, af_f, pdf_f = request.files['roster'], request.files['af'], request.files['salary_pdf']
+    roster_bytes, af_bytes, pdf_bytes = roster_f.read(), af_f.read(), pdf_f.read()
+
+    try:
+        roster_df = read_sheet(roster_bytes, roster_f.filename, 'input', fallback_to_first=True)
+        af_df = read_sheet(af_bytes, af_f.filename, 0)
+        result_df, _warnings = sort_af_by_roster(roster_df, af_df)
+
+        sn1, yearmonth = parse_af_filename(af_f.filename)
+        school_name, _sn2 = lookup_school(sn1)
+
+        records = result_df.fillna('').to_dict(orient='records')
+        columns = result_df.columns.tolist()
+        category = compute_category_audit(records, columns)
+
+        category_text = _category_summary_text(category['summary'], paycheck.OFFICIAL_CATEGORIES)
+        salary_codes = _tally_codes(result_df['薪俸表別']) if '薪俸表別' in columns else ''
+        salary_total = _col_sum(records, '支領數額')
+        prof_codes = _tally_codes(result_df['專業加給表別']) if '專業加給表別' in columns else ''
+        prof_total = _col_sum(records, '支領數額.1')
+        duty_codes = _tally_codes(result_df['職務加給表別']) if '職務加給表別' in columns else ''
+        duty_total = _col_sum(records, '支領數額.2')
+        region_codes = _tally_codes(result_df['地域加給表別']) if '地域加給表別' in columns else ''
+        region_total = _col_sum(records, '支領數額.3') if '支領數額.3' in columns else 0
+    except KeyError as e:
+        return jsonify({'error': '找不到欄位或工作表：' + str(e) + '，請確認固定清冊／AF 檔格式與範例相符'}), 400
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except FILE_FORMAT_ERRORS:
+        return jsonify({'error': '固定清冊或 AF 檔格式錯誤，請確認上傳的是正確的 Excel 檔案'}), 400
+    except Exception as e:
+        return jsonify({'error': '處理固定清冊／AF 檔時發生錯誤：' + str(e)}), 500
+
+    # PDF 辨識成功與否不當作能否產出這張表的門檻（Leo 明確要求）：就算掃描檔
+    # 沒有文字層、解析拋例外、或解析不出任何人，右半邊(L~O)就留空、Q 也留空
+    # 讓人工判斷，其餘照樣正常產出、可以下載，不整個擋住。責任在使用者身上，
+    # 他們送出前本來就要自己核對/修正好數字。
+    pdf_warning = None
+    pdf_people = []
+    if not paycheck.has_text_layer(pdf_bytes):
+        pdf_warning = '薪資清冊 PDF 是掃描圖檔，系統無法自動辨識文字，右半邊金額請自行填入後再送出。'
+    else:
+        try:
+            pdf_people, _layout = paycheck.parse_pdf(pdf_bytes)
+        except Exception as e:
+            pdf_warning = f'解析薪資清冊 PDF 時發生錯誤（{e}），右半邊金額請自行填入後再送出。'
+            pdf_people = []
+        if not pdf_warning and not pdf_people:
+            pdf_warning = '薪資清冊 PDF 偵測不到表格結構，無法自動算出金額，右半邊金額請自行填入後再送出。'
+
+    if pdf_people:
+        pdf_salary = sum(p.get('薪俸', 0) for p in pdf_people)
+        pdf_prof = sum(p.get('專業加給', 0) for p in pdf_people)
+        pdf_duty = sum(p.get('主管加給', 0) + p.get('導師特教', 0) for p in pdf_people)
+        pdf_region = sum(p.get('地域加給', 0) for p in pdf_people)
+        match = (salary_total == pdf_salary and prof_total == pdf_prof
+                 and duty_total == pdf_duty and region_total == pdf_region)
+        q_value = 'Y' if match else 'N'
+    else:
+        # 辨識不出人員資料：右半邊留空、Q 留空，不猜測、不硬填 0。
+        pdf_salary = pdf_prof = pdf_duty = pdf_region = ''
+        q_value = ''
+
+    row_values = [
+        1, school_name,
+        category_text, salary_codes, salary_total, prof_codes, prof_total,
+        duty_codes, duty_total, region_codes, region_total,
+        pdf_salary, pdf_prof, pdf_duty, pdf_region,
+        '', q_value, '', '',
+    ]
+    out = build_cross_check_excel(row_values)
+    filename = f'互核結果表_{school_name or "未知學校"}_{yearmonth or ""}.xlsx'
+    bump_counter('sorts')
+    resp = send_file(out, as_attachment=True, download_name=filename,
+                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    if pdf_warning:
+        # 用 base64 避免中文字出現在 HTTP header 裡導致編碼錯誤；
+        # 前端下載後可解碼顯示提醒，但即使前端不理會，檔案本身仍正常下載。
+        resp.headers['X-Cross-Check-Warning'] = base64.b64encode(pdf_warning.encode('utf-8')).decode('ascii')
+    return resp
+
+
 # ── 新增：薪資清冊 PDF 比對 ────────────────────────────────
 
 @app.route('/compare-pdf', methods=['POST'])

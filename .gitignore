@@ -5,3 +5,4 @@ person_categories.json
 .env
 *.log
 .DS_Store
+*.bak-*

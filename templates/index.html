@@ -105,6 +105,10 @@ tbody td.name-col{text-align:left;font-weight:600}
 .btn-cmp:disabled{background:#aaa;cursor:default}
 .act-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 .act-box{border:1px solid #d5dae2;padding:14px 16px}
+.act-box-full{grid-column:1/-1}
+.btn-cross{background:#2f6b3a;color:#fff;border:none;padding:8px 30px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;letter-spacing:.5px;transition:.15s;white-space:nowrap}
+.btn-cross:hover{background:#22502a}
+.btn-cross:disabled{background:#aaa;cursor:default}
 .act-box h4{font-size:12px;color:#1a3a5c;margin-bottom:4px;font-weight:700}
 .act-box .d{font-size:11px;color:#666;line-height:1.7;margin-bottom:11px;min-height:34px}
 .act-box .msg{margin-top:11px}
@@ -315,6 +319,15 @@ tbody td.name-col{text-align:left;font-weight:600}
           </div>
           <div class="msg" id="msg"></div>
         </div>
+        <div class="act-box act-box-full">
+          <h4>③ 產製互核結果表</h4>
+          <div class="d">依「薪資互核結果表」官方範本，一次產出單列＋表頭的 Excel（機關單位／各類人員類別／各表別代碼與金額，並自動帶入薪資清冊 PDF 解析出的金額、自動建議互核相符 Y/N，差異原因等留白供人工填寫）。<br>需上傳：固定清冊檔＋AF 資料檔＋薪資清冊 PDF。若 PDF 無法自動辨識，右半邊金額與互核相符欄會留空，仍可下載後自行填入。</div>
+          <div class="action-bar">
+            <button class="btn-cross" id="btn-cross" onclick="doCrossCheck()" disabled>產製互核結果表</button>
+            <div class="loader" id="cross-loader"><div class="spin"></div>產製中...</div>
+          </div>
+          <div class="msg" id="cross-msg"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -454,6 +467,59 @@ function checkReady() {
   document.getElementById('btn-go').disabled = !(files.roster && files.af);
   // 比對：AF + 薪資清冊 PDF
   document.getElementById('btn-cmp').disabled = !(files.af && files.pdf);
+  // 互核結果表：固定清冊 + AF + 薪資清冊 PDF 三個都要
+  const btnCross = document.getElementById('btn-cross');
+  if (btnCross) btnCross.disabled = !(files.roster && files.af && files.pdf);
+}
+
+async function doCrossCheck() {
+  const fd = new FormData();
+  fd.append('roster', files.roster);
+  fd.append('af', files.af);
+  fd.append('salary_pdf', files.pdf);
+  const btn = document.getElementById('btn-cross');
+  const loader = document.getElementById('cross-loader');
+  const msg = document.getElementById('cross-msg');
+  btn.disabled = true;
+  loader.style.display = 'flex';
+  msg.textContent = '';
+  msg.className = 'msg';
+  try {
+    const res = await fetch('/cross-check', { method: 'POST', body: fd });
+    if (!res.ok) {
+      let errMsg = '產製失敗，請確認上傳的檔案格式';
+      try { const j = await res.json(); if (j && j.error) errMsg = j.error; } catch (e) {}
+      msg.textContent = '❌ ' + errMsg;
+      msg.className = 'msg err-msg';
+      return;
+    }
+    const blob = await res.blob();
+    let filename = '互核結果表.xlsx';
+    const cd = res.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
+    if (m) { try { filename = decodeURIComponent(m[1]); } catch (e) { filename = m[1]; } }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    const warnB64 = res.headers.get('X-Cross-Check-Warning');
+    if (warnB64) {
+      let warnText = 'PDF 部分欄位無法自動辨識，請下載後自行確認、補填。';
+      try { warnText = decodeURIComponent(escape(atob(warnB64))); } catch (e) {}
+      msg.textContent = '✔ 已下載互核結果表　⚠ ' + warnText;
+      msg.className = 'msg warn-msg';
+    } else {
+      msg.textContent = '✔ 已下載互核結果表';
+      msg.className = 'msg ok-msg';
+    }
+  } catch (e) {
+    msg.textContent = '❌ 發生錯誤：' + e.message;
+    msg.className = 'msg err-msg';
+  } finally {
+    checkReady();
+    loader.style.display = 'none';
+  }
 }
 async function doProcess() {
   const fd = new FormData();
