@@ -8,22 +8,22 @@
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Microsoft JhengHei','微軟正黑體',Arial,sans-serif;background:#fff;color:#111;font-size:14px;min-height:100vh;display:flex;flex-direction:column}
 .header{border-bottom:3px solid #1a3a5c;padding:10px 32px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
-.header-left{display:flex;align-items:center;gap:14px}
+.header-left{display:flex;align-items:center;gap:14px;min-width:0}
 .header-logo{width:38px;height:38px;border:2px solid #1a3a5c;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#1a3a5c;letter-spacing:-.5px;flex-shrink:0}
-.header-title{font-size:17px;font-weight:700;color:#1a3a5c;letter-spacing:.5px}
+.header-title{font-size:17px;font-weight:700;color:#1a3a5c;letter-spacing:.5px;line-height:1.25}
 .header-sub{font-size:11px;color:#555;margin-top:2px}
 .header-right{font-size:11px;color:#777;text-align:right;line-height:1.8}
-.container{max-width:940px;margin:0 auto;padding:24px 24px 32px;width:100%;flex:1}
-.section{border:1px solid #b0b8c4;margin-bottom:18px}
+.container{max-width:940px;margin:0 auto;padding:24px 24px 32px;width:100%;min-width:0;flex:1}
+.section{border:1px solid #b0b8c4;margin-bottom:18px;min-width:0}
 .section-head{background:#1a3a5c;color:#fff;padding:7px 16px;font-size:13px;font-weight:700;letter-spacing:.8px;display:flex;align-items:center;gap:10px}
 .section-head-gray{background:#5a6a7a;color:#fff;padding:7px 16px;font-size:13px;font-weight:700;letter-spacing:.8px}
 .step-badge{background:#fff;color:#1a3a5c;font-size:11px;font-weight:700;border-radius:2px;min-width:20px;height:20px;display:flex;align-items:center;justify-content:center;padding:0 4px;flex-shrink:0}
 .section-body{padding:18px 20px}
-.upload-row{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
-.upload-block{border:1px solid #b0b8c4}
-.upload-block-head{background:#e8ecf2;padding:7px 12px;font-size:12px;font-weight:700;color:#1a3a5c;border-bottom:1px solid #b0b8c4;display:flex;align-items:center;justify-content:space-between}
+.upload-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.upload-block{border:1px solid #b0b8c4;min-width:0}
+.upload-block-head{background:#e8ecf2;padding:7px 12px;font-size:12px;font-weight:700;color:#1a3a5c;border-bottom:1px solid #b0b8c4;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
 .upload-block-body{padding:14px 14px 12px}
-.upload-desc{font-size:11px;color:#555;margin-bottom:10px;line-height:1.7}
+.upload-desc{font-size:11px;color:#555;margin-bottom:10px;line-height:1.7;overflow-wrap:anywhere}
 .upload-desc .em{color:#1a3a5c;font-weight:700}
 .drop-zone{border:2px dashed #b0b8c4;padding:20px 14px;text-align:center;cursor:pointer;background:#fafafa;transition:.2s;position:relative}
 .drop-zone:hover{background:#f0f4f8;border-color:#1a3a5c}
@@ -109,7 +109,7 @@ tbody td.name-col{text-align:left;font-weight:600}
 .btn-cross{background:#2f6b3a;color:#fff;border:none;padding:8px 30px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;letter-spacing:.5px;transition:.15s;white-space:nowrap}
 .btn-cross:hover{background:#22502a}
 .btn-cross:disabled{background:#aaa;cursor:default}
-.act-box h4{font-size:12px;color:#1a3a5c;margin-bottom:4px;font-weight:700}
+.act-box h3{font-size:12px;color:#1a3a5c;margin-bottom:4px;font-weight:700}
 .act-box .d{font-size:11px;color:#666;line-height:1.7;margin-bottom:11px;min-height:34px}
 .act-box .msg{margin-top:11px}
 .act-box .msg:empty{margin-top:0}
@@ -171,6 +171,8 @@ tbody td.name-col{text-align:left;font-weight:600}
 .cmp-ok{border:1px solid #d5dae2;background:#f7f9fb;padding:10px 14px;font-size:12px;color:#444;margin-top:4px}
 .cmp-ok summary{cursor:pointer;font-weight:700;color:#1a4d2a}
 .cmp-ok .names{margin-top:8px;line-height:1.9;color:#555}
+.sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,details:focus-visible{outline:3px solid #e0a800;outline-offset:3px}
 @media print{
   .header,.section:not(#result-section),.footer,.dl-btn-row,.result-top,.tbl-note{display:none!important}
   #result-section{display:block!important;border:none}
@@ -181,11 +183,31 @@ tbody td.name-col{text-align:left;font-weight:600}
   table{font-size:10px}
 }
 @media(max-width:640px){
-  .upload-row{grid-template-columns:1fr}
-  .header{padding:10px 16px}
-  .container{padding:16px}
-  .header-right{font-size:0}
-  .header-right .counter{font-size:10px;gap:6px;justify-content:flex-end;margin:0}
+  .upload-row{grid-template-columns:minmax(0,1fr)}
+  .header{padding:10px 16px;align-items:flex-start;gap:8px;flex-wrap:wrap}
+  .header-title{font-size:15px;letter-spacing:0}
+  .header-sub{font-size:10px;line-height:1.45}
+  .header-right{display:none}
+  .container{padding:16px 12px 24px}
+  .section-body{padding:14px 12px}
+  .act-grid{grid-template-columns:1fr}
+  .act-box-full{grid-column:auto}
+  .act-box{padding:14px 12px}
+  .act-box .d{min-height:0;font-size:12px}
+  .action-bar{align-items:stretch}
+  .act-box .action-bar button{width:100%}
+  .upload-block-head .template-link{white-space:normal;line-height:1.45}
+  .drop-zone{padding:24px 12px}
+  .dl-block{gap:10px;flex-direction:column}
+  .dl-btn-row{align-items:stretch}
+  .dl-btn-row button{width:100%;white-space:normal}
+  .cmp-head{align-items:flex-start}
+  .cmp-tag{margin-left:0}
+  .rev-tbl{min-width:920px}
+  #compare-section .section-body,#result-section .section-body,#category-section .section-body{overflow-x:auto}
+}
+@media(prefers-reduced-motion:reduce){
+  *,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
 }
 </style>
 </head>
@@ -195,7 +217,7 @@ tbody td.name-col{text-align:left;font-weight:600}
   <div class="header-left">
     <div class="header-logo">AF</div>
     <div>
-      <div class="header-title">AF 用人費用欄位排序系統</div>
+      <h1 class="header-title">AF 用人費用欄位排序系統</h1>
       <div class="header-sub">依薪資清冊序號自動重新排列 AF 資料欄位</div>
     </div>
   </div>
@@ -205,14 +227,14 @@ tbody td.name-col{text-align:left;font-weight:600}
       <span>排序<b id="c-sorts">—</b></span>
       <span>比對<b id="c-compares">—</b></span>
     </div>
-    系統版本：v1.3.5　│　115 年度適用
+    系統版本：{{ app_version }}　│　115 年度適用
   </div>
 </div>
 
-<div class="container">
+<main class="container">
 
   <div class="section">
-    <div class="section-head"><span class="step-badge">1</span>上傳檔案</div>
+    <h2 class="section-head"><span class="step-badge">1</span>上傳檔案</h2>
     <div class="section-body">
       <div class="upload-row">
         <div class="upload-block">
@@ -221,7 +243,7 @@ tbody td.name-col{text-align:left;font-weight:600}
             <a class="template-link" href="/download-template" download>↓ 下載範例格式</a>
           </div>
           <div class="upload-block-body">
-            <div class="upload-desc">
+            <div class="upload-desc" id="desc-roster">
               欄位：序號（也接受編號、號碼、項次、流水號）、姓名、身分證字號（同名者必填）。<br>
               檔名可自行命名；優先讀取 <span class="em">input</span> 工作表，找不到時自動改讀第一個工作表。<br>
               請依薪資清冊正確順序填入，每月人員異動時更新。<br>
@@ -231,7 +253,7 @@ tbody td.name-col{text-align:left;font-weight:600}
                  ondragover="onDragOver(event,'roster')"
                  ondragleave="onDragLeave('roster')"
                  ondrop="onDrop(event,'roster')">
-              <input type="file" id="inp-roster" accept=".xlsx,.xls" onchange="onFile('roster',this)">
+              <input type="file" id="inp-roster" accept=".xlsx,.xls" aria-label="選擇固定清冊 Excel 檔" aria-describedby="desc-roster" onchange="onFile('roster',this)">
               <div class="drop-icon">📋</div>
               <div class="drop-text">拖曳檔案到此處</div>
               <div class="drop-hint">或點擊選擇檔案　.xlsx / .xls</div>
@@ -242,7 +264,7 @@ tbody td.name-col{text-align:left;font-weight:600}
         <div class="upload-block">
           <div class="upload-block-head">AF 資料檔（本月）</div>
           <div class="upload-block-body">
-            <div class="upload-desc">
+            <div class="upload-desc" id="desc-af">
               由 AF 用人費用管理系統產製。<br>
               每月上傳當月產製之檔案。<br>
               支援格式：<span class="em">.xlsx　.xls</span>
@@ -251,7 +273,7 @@ tbody td.name-col{text-align:left;font-weight:600}
                  ondragover="onDragOver(event,'af')"
                  ondragleave="onDragLeave('af')"
                  ondrop="onDrop(event,'af')">
-              <input type="file" id="inp-af" accept=".xlsx,.xls" onchange="onFile('af',this)">
+              <input type="file" id="inp-af" accept=".xlsx,.xls" aria-label="選擇本月 AF 資料 Excel 檔" aria-describedby="desc-af" onchange="onFile('af',this)">
               <div class="drop-icon">📊</div>
               <div class="drop-text">拖曳檔案到此處</div>
               <div class="drop-hint">或點擊選擇檔案　.xlsx / .xls</div>
@@ -262,16 +284,16 @@ tbody td.name-col{text-align:left;font-weight:600}
         <div class="upload-block">
           <div class="upload-block-head">薪資清冊 PDF（選用）</div>
           <div class="upload-block-body">
-            <div class="upload-desc">
+            <div class="upload-desc" id="desc-pdf">
               學校薪資印領清冊，供核對金額用。<br>
-              須為系統匯出之電子檔，掃描圖無法解析。<br>
+              系統匯出的電子 PDF 可直接解析；掃描 PDF 會引導使用文字辨識並人工確認。<br>
               支援格式：<span class="em">.pdf</span>
             </div>
             <div class="drop-zone" id="drop-pdf"
                  ondragover="onDragOver(event,'pdf')"
                  ondragleave="onDragLeave('pdf')"
                  ondrop="onDrop(event,'pdf')">
-              <input type="file" id="inp-pdf" accept=".pdf" onchange="onFile('pdf',this)">
+              <input type="file" id="inp-pdf" accept=".pdf" aria-label="選擇薪資清冊 PDF" aria-describedby="desc-pdf" onchange="onFile('pdf',this)">
               <div class="drop-icon">📄</div>
               <div class="drop-text">拖曳檔案到此處</div>
               <div class="drop-hint">或點擊選擇檔案　.pdf</div>
@@ -294,7 +316,7 @@ tbody td.name-col{text-align:left;font-weight:600}
   </div>
 
   <div class="section">
-    <div class="section-head"><span class="step-badge">2</span>執行作業</div>
+    <h2 class="section-head"><span class="step-badge">2</span>執行作業</h2>
     <div class="section-body">
       <div class="act-order">
         <strong>建議順序：</strong>先「比對資料」確認 AF 金額與薪資清冊相符，確認無誤後再「執行排序」。
@@ -302,48 +324,48 @@ tbody td.name-col{text-align:left;font-weight:600}
       </div>
       <div class="act-grid">
         <div class="act-box">
-          <h4>① 比對資料</h4>
+          <h3>① 比對資料</h3>
           <div class="d">核對 AF 與薪資清冊的薪俸、專業加給、職務加給、導師加給是否相符。<br>需上傳：AF 資料檔＋薪資清冊 PDF</div>
           <div class="action-bar">
             <button class="btn-cmp" id="btn-cmp" onclick="doCompare()" disabled>比對資料</button>
             <div class="loader" id="cmp-loader"><div class="spin"></div>解析比對中...</div>
           </div>
-          <div class="msg" id="cmp-msg"></div>
+          <div class="msg" id="cmp-msg" role="status" aria-live="polite"></div>
         </div>
         <div class="act-box">
-          <h4>② 執行排序</h4>
+          <h3>② 執行排序</h3>
           <div class="d">依固定清冊的序號重新排列 AF 資料欄位，並產製下載與稽核表。<br>需上傳：固定清冊檔＋AF 資料檔</div>
           <div class="action-bar">
             <button class="btn-go" id="btn-go" onclick="doProcess()" disabled>執行排序</button>
             <div class="loader" id="loader"><div class="spin"></div>排序處理中...</div>
           </div>
-          <div class="msg" id="msg"></div>
+          <div class="msg" id="msg" role="status" aria-live="polite"></div>
         </div>
         <div class="act-box act-box-full">
-          <h4>③ 產製互核結果表</h4>
+          <h3>③ 產製互核結果表</h3>
           <div class="d">依「薪資互核結果表」官方範本，一次產出單列＋表頭的 Excel（機關單位／各類人員類別／各表別代碼與金額，差異原因等留白供人工填寫）。<br>需上傳：固定清冊檔＋AF 資料檔（必填）。薪資清冊 PDF 為<strong>選填</strong>：有上傳就會解析 PDF 金額填入右半邊、自動比對建議 Y/N（若無法辨識則右半邊與 Y/N 留空，仍可下載後自行填入）；<strong>不上傳就直接以 AF 算出的數字同時填入左右兩邊，互核相符自動填 Y</strong>（此時並非真的核對過薪資清冊，只是形式一致，請自行注意）。</div>
           <div class="action-bar">
             <button class="btn-cross" id="btn-cross" onclick="doCrossCheck()" disabled>產製互核結果表</button>
             <div class="loader" id="cross-loader"><div class="spin"></div>產製中...</div>
           </div>
-          <div class="msg" id="cross-msg"></div>
+          <div class="msg" id="cross-msg" role="status" aria-live="polite"></div>
         </div>
       </div>
     </div>
   </div>
 
-  <div class="section" id="compare-section">
-    <div class="section-head"><span class="step-badge">3</span>比對結果</div>
+  <div class="section" id="compare-section" tabindex="-1">
+    <h2 class="section-head"><span class="step-badge">3</span>比對結果</h2>
     <div class="section-body">
       <div id="cmp-result"></div>
     </div>
   </div>
 
-  <div class="section" id="result-section">
-    <div class="section-head"><span class="step-badge">4</span>排序結果與下載</div>
+  <div class="section" id="result-section" tabindex="-1">
+    <h2 class="section-head"><span class="step-badge">4</span>排序結果與下載</h2>
     <div class="section-body">
       <div class="result-top">
-        <div class="r-stat">比對完成，共 <strong id="stat-total">0</strong> 筆人員</div>
+        <div class="r-stat">排序完成，共 <strong id="stat-total">0</strong> 筆人員</div>
         <button class="btn-reset" onclick="resetAll()">重新上傳</button>
       </div>
       <div class="warn-msg" id="sample-banner-result" style="display:none">
@@ -377,7 +399,7 @@ tbody td.name-col{text-align:left;font-weight:600}
   </div>
 
   <div class="section" id="category-section" style="display:none">
-    <div class="section-head"><span class="step-badge">5</span>人員類別與鉤稽</div>
+    <h2 class="section-head"><span class="step-badge">5</span>人員類別與鉤稽</h2>
     <div class="section-body">
       <div id="category-summary"></div>
       <div id="category-unassigned"></div>
@@ -386,7 +408,7 @@ tbody td.name-col{text-align:left;font-weight:600}
   </div>
 
   <div class="section">
-    <div class="section-head-gray">工具下載</div>
+    <h2 class="section-head-gray">工具下載</h2>
     <div class="section-body">
       <div class="dl-block">
         <div class="dl-badge">網頁版</div>
@@ -411,14 +433,24 @@ tbody td.name-col{text-align:left;font-weight:600}
     </div>
   </div>
 
-</div>
+</main>
 
-<div class="footer">本系統僅供內部作業使用，請勿將資料外傳。｜版本 2026.08.24.14</div>
+<div class="footer">本系統僅供內部作業使用，請勿將資料外傳。｜版本 {{ build_version }}</div>
 
 <script>
 const files = {roster: null, af: null, pdf: null};
 let simpleCols = [];
 let isSampleDataActive = false;
+
+function revealSection(id) {
+  const section = document.getElementById(id);
+  if (!section) return;
+  section.style.display = 'block';
+  requestAnimationFrame(() => {
+    section.scrollIntoView({behavior: 'smooth', block: 'start'});
+    section.focus({preventScroll: true});
+  });
+}
 
 function updateSampleBanners() {
   const b1 = document.getElementById('sample-banner-upload');
@@ -834,7 +866,7 @@ function renderTable(cols, rows, total) {
   document.getElementById('tbl-note').textContent = total > 20
     ? '※ 預覽顯示前 20 筆（簡單版欄位），下載可取得完整資料。'
     : '※ 已顯示全部資料（簡單版欄位）。';
-  document.getElementById('result-section').style.display = 'block';
+  revealSection('result-section');
 }
 function resetAll() {
   files.roster = null; files.af = null; files.pdf = null;
@@ -856,6 +888,7 @@ function resetAll() {
   document.getElementById('category-summary').innerHTML = '';
   document.getElementById('category-unassigned').innerHTML = '';
   document.getElementById('category-mismatch').innerHTML = '';
+  revRows = []; revJob = null; exTitles = []; exNames = [];
   isSampleDataActive = false;
   updateSampleBanners();
   checkReady();
@@ -887,7 +920,7 @@ async function startOCR(jobId) {
 
 /* ── 掃描檔：等待 Mac 端文字辨識 ── */
 async function pollOCR(jobId, notice) {
-  document.getElementById('compare-section').style.display = 'block';
+  revealSection('compare-section');
   const box = document.getElementById('cmp-result');
   const t0 = Date.now();
 
@@ -940,13 +973,22 @@ const REV_F = ['薪俸','專業加給','主管加給','導師特教','其他加�
 let revRows = [], revJob = null;
 
 function renderReview(d) {
-  revRows = d.need; revJob = d.job_id;
+  revRows = d.need;
+  revJob = d.job_id;
+  exTitles = [];
+  exNames = [];
+  revRows.forEach(r => {
+    r._排除 = false;
+    r._excludeManual = false;
+    r._excludeTitle = false;
+  });
   let h = '<div class="alert-panel"><h4><span style="font-size:17px">⚠</span>'
     + '有 ' + d.need.length + ' 筆需要您確認'
     + '<span class="tag">' + d.auto_ok + ' 筆已自動通過</span></h4>'
     + '<div class="why">下列資料的文字辨識結果不夠可靠。'
     + '欄位已填入辨識到的數值，<b>請對照紙本清冊確認</b>，紅框處特別需要留意。<br>'
-    + '各項相加等於應發金額時，該列會轉為綠色。</div>';
+    + '各項相加等於應發金額時，該列會轉為綠色；'
+    + '這只代表加總一致，仍請核對姓名與各欄金額。</div>';
 
   // 後端只提供可安全整類排除的非正式職稱；正式職稱永遠不顯示此選項。
   const titles = d.exclude_title_options || [];
@@ -969,19 +1011,20 @@ function renderReview(d) {
   d.need.forEach((r, i) => {
     const ns = r['姓名可疑'] ? ' sus' : '';
     const ms = r['金額可疑'] ? ' sus' : '';
+    const rowLabel = '第 ' + (i + 1) + ' 筆';
     h += '<tr id="rv' + i + '"><td class="nm">'
        + '<input class="name' + ns + '" list="afnames" data-i="' + i + '" data-f="姓名" value="'
-       + esc(r['建議姓名'] || r['原始姓名'] || '') + '" oninput="onRev(this)"></td>'
+       + esc(r['建議姓名'] || r['原始姓名'] || '') + '" aria-label="' + rowLabel + '姓名" oninput="onRev(this)"></td>'
        + '<td style="font-size:11px;color:#666">' + esc(r['職稱'] || '') + '</td>';
     REV_F.forEach(f => {
       h += '<td><input data-i="' + i + '" data-f="' + f + '" class="' + ms
-         + '" value="' + (r[f] || 0) + '" oninput="onRev(this)"></td>';
+         + '" value="' + (r[f] || 0) + '" aria-label="' + rowLabel + esc(f) + '" oninput="onRev(this)"></td>';
     });
     h += '<td><input data-i="' + i + '" data-f="應發金額" class="' + ms
-       + '" value="' + r['應發金額'] + '" oninput="onRev(this)"></td>'
+       + '" value="' + r['應發金額'] + '" aria-label="' + rowLabel + '應發金額" oninput="onRev(this)"></td>'
        + '<td class="rev-chk" id="rc' + i + '">—</td>'
        + '<td><button class="btn-x" onclick="dropRow(' + i + ')" id="bx' + i + '">排除</button></td></tr>'
-       + '<tr><td colspan="10" class="rev-why">↳ '
+       + '<tr id="rr' + i + '"><td colspan="10" class="rev-why">↳ '
        + (r['原因'] || []).map(esc).join('；') + '</td></tr>';
   });
   h += '</tbody></table>';
@@ -994,7 +1037,7 @@ function renderReview(d) {
      + '無法確認的列可清空姓名，該列將不納入比對。</span></div></div>';
 
   document.getElementById('cmp-result').innerHTML = h;
-  document.getElementById('compare-section').style.display = 'block';
+  revealSection('compare-section');
   d.need.forEach((_, i) => revCheck(i));
 }
 
@@ -1002,17 +1045,32 @@ let exTitles = [], exNames = [];
 
 
 
+function syncReviewExclusion(i) {
+  const row = revRows[i];
+  const tr = document.getElementById('rv' + i);
+  const reason = document.getElementById('rr' + i);
+  const btn = document.getElementById('bx' + i);
+  if (!tr || !btn) return;
+  const excluded = Boolean(row._excludeManual || row._excludeTitle);
+  row._排除 = excluded;
+  tr.classList.toggle('gone', excluded);
+  if (reason) reason.classList.toggle('gone', excluded);
+  tr.querySelectorAll('input').forEach(el => el.disabled = excluded);
+  btn.disabled = Boolean(row._excludeTitle && !row._excludeManual);
+  btn.textContent = row._excludeManual
+    ? '取消排除'
+    : (row._excludeTitle ? '已依職稱排除' : '排除');
+}
+
 function dropRow(i) {
-  const tr = document.getElementById('rv' + i), btn = document.getElementById('bx' + i);
-  const gone = tr.classList.toggle('gone');
-  revRows[i]._排除 = gone;
-  btn.textContent = gone ? '復原' : '排除';
+  const row = revRows[i];
+  row._excludeManual = !row._excludeManual;
   const nm = (revRows[i]['姓名'] || revRows[i]['建議姓名'] || revRows[i]['原始姓名'] || '').trim();
   if (nm) {
     exNames = exNames.filter(x => x !== nm);
-    if (gone) exNames.push(nm);
+    if (row._excludeManual) exNames.push(nm);
   }
-  tr.querySelectorAll('input').forEach(el => el.disabled = gone);
+  syncReviewExclusion(i);
 }
 
 function toggleTitle(cb) {
@@ -1022,12 +1080,9 @@ function toggleTitle(cb) {
   revRows.forEach((r, i) => {
     if ((r['職稱'] || '').includes(t)) {
       const tr = document.getElementById('rv' + i);
-      const btn = document.getElementById('bx' + i);
       if (!tr) return;
-      r._排除 = cb.checked;
-      tr.classList.toggle('gone', cb.checked);
-      btn.textContent = cb.checked ? '復原' : '排除';
-      tr.querySelectorAll('input').forEach(el => el.disabled = cb.checked);
+      r._excludeTitle = cb.checked;
+      syncReviewExclusion(i);
     }
   });
 }
@@ -1107,7 +1162,7 @@ function showAlert(d) {
   h += '</div>';
   document.getElementById('cmp-msg').innerHTML = '';
   document.getElementById('cmp-result').innerHTML = h;
-  document.getElementById('compare-section').style.display = 'block';
+  revealSection('compare-section');
 }
 
 /* ── 使用次數計數器 ── */
@@ -1167,7 +1222,7 @@ async function doCompare() {
     if (data.mode === 'ocr_pending') { pollOCR(data.job_id, data.notice); return; }
     renderCompare(data);
     setCounts(data.counts);
-    document.getElementById('compare-section').style.display = 'block';
+    revealSection('compare-section');
   } catch(e) {
     cmpMsg('err', '連線失敗：' + esc(e.message));
   } finally {
@@ -1339,6 +1394,5 @@ function excludeRow(i) {
   renderCompare(window._cmp);
 }
 </script>
-<script defer src="https://leotsai.me/assets/site-counter.js?v=20260908-no-dedup"></script>
 </body>
 </html>

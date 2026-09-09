@@ -1,9 +1,10 @@
-from flask import Flask, request, jsonify, render_template, send_file, session
+from flask import Flask, request, jsonify, render_template, send_file, session, abort, redirect
 import pandas as pd
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-import io, os, json, re, tempfile, subprocess, unicodedata, uuid
+import io, os, json, re, tempfile, subprocess, unicodedata, uuid, hmac
 import html as _html
+from functools import wraps
 from zipfile import BadZipFile
 from docx import Document
 from docx.oxml.ns import qn
@@ -19,6 +20,76 @@ app.config.update(
     SESSION_COOKIE_HTTPONLY=True,   # 禁止 JavaScript 讀取 session cookie，降低 XSS 連帶竊取 session 的風險
     SESSION_COOKIE_SAMESITE='Lax',  # 降低跨站請求偽造（CSRF）風險
 )
+
+APP_VERSION = 'v1.3.11'
+BUILD_VERSION = '2026.09.10.1'
+
+
+def _is_sensitive_response(path):
+    """辨識、比對、列印與下載內容可能含個資，不允許瀏覽器或代理快取。"""
+    prefixes = (
+        '/process', '/compare-pdf', '/cross-check', '/categories/', '/ocr/',
+        '/download-simple', '/download-result', '/download-category-audit',
+        '/download-audit', '/print-', '/settings/', '/stats/diag',
+    )
+    return any(path.startswith(prefix) for prefix in prefixes)
+
+
+@app.before_request
+def enforce_proxy_https():
+    """Cloudflare 明確標示外部請求為 HTTP 時，保留方法並轉往 HTTPS。"""
+    forwarded_proto = request.headers.get('X-Forwarded-Proto', '').split(',', 1)[0].strip().lower()
+    if forwarded_proto == 'http':
+        return redirect(request.url.replace('http://', 'https://', 1), code=308)
+
+
+@app.after_request
+def add_security_headers(response):
+    response.headers.setdefault('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+    response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    response.headers.setdefault('X-Frame-Options', 'DENY')
+    response.headers.setdefault('Referrer-Policy', 'no-referrer')
+    response.headers.setdefault(
+        'Permissions-Policy',
+        'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
+    )
+    response.headers.setdefault('X-Robots-Tag', 'noindex, nofollow, noarchive')
+    response.headers.setdefault(
+        'Content-Security-Policy',
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+        "font-src 'self'; connect-src 'self'; object-src 'none'; "
+        "base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+    )
+    if _is_sensitive_response(request.path):
+        response.headers['Cache-Control'] = 'no-store, max-age=0'
+        response.headers['Pragma'] = 'no-cache'
+    return response
+
+
+@app.errorhandler(413)
+def upload_too_large(_error):
+    max_mb = app.config['MAX_CONTENT_LENGTH'] // (1024 * 1024)
+    return jsonify({
+        'error': f'上傳檔案合計超過 {max_mb} MB，請縮小檔案或分開處理後再試。'
+    }), 413
+
+
+def admin_required(view):
+    """管理／診斷端點預設關閉；啟用時必須提供獨立的 ADMIN_KEY。"""
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        expected = os.environ.get('ADMIN_KEY', '').strip()
+        if not expected:
+            abort(404)
+        supplied = request.headers.get('X-Admin-Key', '').strip()
+        authorization = request.headers.get('Authorization', '')
+        if authorization.startswith('Bearer '):
+            supplied = authorization[7:].strip()
+        if not supplied or not hmac.compare_digest(supplied, expected):
+            return jsonify({'error': 'unauthorized'}), 401
+        return view(*args, **kwargs)
+    return wrapped
 
 try:
     import xlrd
@@ -874,7 +945,8 @@ def build_audit_docx(school_name, sn2, yearmonth):
 def index():
     bump_counter('visits')
     touch_active()
-    return render_template('index.html')
+    return render_template(
+        'index.html', app_version=APP_VERSION, build_version=BUILD_VERSION)
 
 
 @app.route('/stats')
@@ -883,6 +955,7 @@ def stats():
 
 
 @app.route('/stats/diag')
+@admin_required
 def stats_diag():
     d = counter_diag()
     d['目前計數'] = load_counter()
@@ -1085,8 +1158,9 @@ def process():
         return jsonify({'error': str(e)}), 400
     except FILE_FORMAT_ERRORS:
         return jsonify({'error': '檔案格式錯誤，請確認上傳的是正確的 Excel 檔案（.xlsx 或 .xls），且檔案未損毀'}), 400
-    except Exception as e:
-        return jsonify({'error': '處理錯誤：' + str(e)}), 500
+    except Exception:
+        app.logger.exception('排序處理失敗')
+        return jsonify({'error': '處理失敗，請確認檔案內容後重試；若持續發生請通知系統管理者。'}), 500
 
 
 @app.route('/categories/save', methods=['POST'])
@@ -1342,8 +1416,9 @@ def cross_check():
         return jsonify({'error': str(e)}), 400
     except FILE_FORMAT_ERRORS:
         return jsonify({'error': '固定清冊或 AF 檔格式錯誤，請確認上傳的是正確的 Excel 檔案'}), 400
-    except Exception as e:
-        return jsonify({'error': '處理固定清冊／AF 檔時發生錯誤：' + str(e)}), 500
+    except Exception:
+        app.logger.exception('互核結果表前置處理失敗')
+        return jsonify({'error': '處理固定清冊／AF 檔時發生錯誤，請確認檔案內容後重試。'}), 500
 
     # 情境一：使用者選擇不上傳薪資清冊 PDF（不核對）——直接把左半邊 AF
     # 算出來的總計數字照抄到右半邊，形式上兩邊一致，Q 直接填 Y。這不是真
@@ -1364,8 +1439,9 @@ def cross_check():
         else:
             try:
                 pdf_people, _layout = paycheck.parse_pdf(pdf_bytes)
-            except Exception as e:
-                pdf_warning = f'解析薪資清冊 PDF 時發生錯誤（{e}），右半邊金額請自行填入後再送出。'
+            except Exception:
+                app.logger.exception('互核結果表的薪資清冊解析失敗')
+                pdf_warning = '解析薪資清冊 PDF 時發生錯誤，右半邊金額請自行填入後再送出。'
                 pdf_people = []
             if not pdf_warning and not pdf_people:
                 pdf_warning = '薪資清冊 PDF 偵測不到表格結構，無法自動算出金額，右半邊金額請自行填入後再送出。'
@@ -1423,8 +1499,9 @@ def compare_pdf():
         return jsonify({'error': str(e)}), 400
     except FILE_FORMAT_ERRORS:
         return jsonify({'error': '檔案格式錯誤，請確認上傳的是正確的 Excel 檔案（.xlsx 或 .xls），且檔案未損毀'}), 400
-    except Exception as e:
-        return jsonify({'error': '讀取 AF 失敗：' + str(e)}), 500
+    except Exception:
+        app.logger.exception('讀取 AF 失敗')
+        return jsonify({'error': '讀取 AF 失敗，請確認檔案內容後重試。'}), 500
 
     # ── 掃描圖檔 → 無法解析 ──
     if not paycheck.has_text_layer(pdf_bytes):
@@ -1507,11 +1584,13 @@ def compare_pdf():
         out['counts'] = bump_counter('compares')
         return jsonify(out)
 
-    except Exception as e:
-        return jsonify({'error': '比對錯誤：' + str(e)}), 500
+    except Exception:
+        app.logger.exception('薪資清冊比對失敗')
+        return jsonify({'error': '比對失敗，請確認檔案內容後重試；若持續發生請通知系統管理者。'}), 500
 
 
 @app.route('/settings/title-stats')
+@admin_required
 def settings_title_stats():
     """檢視累積的職稱觀察統計"""
     stats = load_title_stats()
@@ -1522,6 +1601,7 @@ def settings_title_stats():
 
 
 @app.route('/settings/exclusions', methods=['GET', 'POST'])
+@admin_required
 def settings_exclusions():
     """讀取／儲存某校的排除設定"""
     if request.method == 'GET':
@@ -1573,8 +1653,9 @@ def ocr_submit_fixed():
         with _ocr_lock:
             _ocr_jobs.pop(jid, None)
         return jsonify(out)
-    except Exception as e:
-        return jsonify({'error': '比對錯誤：' + str(e)}), 500
+    except Exception:
+        app.logger.exception('OCR 人工確認比對失敗')
+        return jsonify({'error': '比對失敗，請重新上傳後再試。'}), 500
 
 
 @app.route('/ocr/claim')
@@ -1718,8 +1799,9 @@ def ocr_status(job_id):
         with _ocr_lock:
             _ocr_jobs.pop(job_id, None)
         return jsonify(out)
-    except Exception as e:
-        return jsonify({'status': 'failed', 'error': '比對錯誤：' + str(e)})
+    except Exception:
+        app.logger.exception('OCR 結果處理失敗')
+        return jsonify({'status': 'failed', 'error': '辨識結果處理失敗，請重新上傳後再試。'})
 
 
 # ── 原有下載 / 列印路由 ────────────────────────────────────
@@ -2068,4 +2150,6 @@ def download_audit():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    # Cloudflare Tunnel 與本機反向代理都從 loopback 連入；預設不暴露到區網。
+    host = os.environ.get('HOST', '127.0.0.1')
+    app.run(host=host, port=port, debug=False)
