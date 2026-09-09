@@ -353,6 +353,15 @@ tbody td.name-col{text-align:left;font-weight:600}
     </div>
   </div>
 
+  <div class="section" id="category-section" style="display:none">
+    <div class="section-head"><span class="step-badge">5</span>人員類別與鉤稽</div>
+    <div class="section-body">
+      <div id="category-summary"></div>
+      <div id="category-unassigned"></div>
+      <div id="category-mismatch"></div>
+    </div>
+  </div>
+
   <div class="section">
     <div class="section-head-gray">工具下載</div>
     <div class="section-body">
@@ -463,6 +472,7 @@ async function doProcess() {
       document.getElementById('btn-audit').style.display = hasSchool ? 'inline-block' : 'none';
 
       renderTable(data.columns, data.preview, data.total);
+      renderCategoryPanel(data.category);
       setCounts(data.counts);
     }
   } catch(e) {
@@ -471,6 +481,158 @@ async function doProcess() {
     document.getElementById('btn-go').disabled = false;
     document.getElementById('loader').style.display = 'none';
   }
+}
+
+/* ── 人員類別與鉤稽 ── */
+function renderCategoryPanel(cat) {
+  const sec = document.getElementById('category-section');
+  if (!cat) { sec.style.display = 'none'; return; }
+  sec.style.display = 'block';
+
+  const cats = (cat.official_categories || []).concat(['未能判定']);
+
+  const sumEl = document.getElementById('category-summary');
+  sumEl.innerHTML = '';
+  const table = document.createElement('table');
+  const thead = document.createElement('thead');
+  const trh = document.createElement('tr');
+  cats.forEach(c => { const th = document.createElement('th'); th.textContent = c; trh.appendChild(th); });
+  thead.appendChild(trh);
+  const tbody = document.createElement('tbody');
+  const tr = document.createElement('tr');
+  cats.forEach(c => {
+    const td = document.createElement('td');
+    td.textContent = (cat.summary && cat.summary[c]) || 0;
+    tr.appendChild(td);
+  });
+  tbody.appendChild(tr);
+  table.appendChild(thead); table.appendChild(tbody);
+  const wrap = document.createElement('div');
+  wrap.className = 'tbl-wrap';
+  wrap.style.marginBottom = '12px';
+  wrap.appendChild(table);
+  sumEl.appendChild(wrap);
+
+  if (cat.no_id_count) {
+    const note = document.createElement('div');
+    note.className = 'warn-msg';
+    note.textContent = '⚠ 有 ' + cat.no_id_count + ' 人固定清冊未填身分證字號，無法記憶人員類別，暫以 AF 薪俸表別判定分類';
+    sumEl.appendChild(note);
+  }
+
+  categoryFineOptions = cat.fine_options || [];
+  renderCategoryUnassigned(cat.unassigned || []);
+  renderCategoryMismatch(cat.mismatches || []);
+}
+
+let categoryFineOptions = [];
+
+function renderCategoryUnassigned(list) {
+  const el = document.getElementById('category-unassigned');
+  el.innerHTML = '';
+  if (!list.length) return;
+
+  const box = document.createElement('div');
+  box.className = 'ex-note';
+  box.textContent = '以下 ' + list.length + ' 人第一次出現，尚未指定人員類別（指定後下個月會自動記住，不必重填）：';
+  el.appendChild(box);
+
+  const table = document.createElement('table');
+  table.className = 'rev-tbl';
+  const thead = document.createElement('thead');
+  const trh = document.createElement('tr');
+  ['姓名', 'AF 薪俸表別判定', '指定人員類別'].forEach(h => {
+    const th = document.createElement('th'); th.textContent = h; trh.appendChild(th);
+  });
+  thead.appendChild(trh);
+  const tbody = document.createElement('tbody');
+  list.forEach(item => {
+    const tr = document.createElement('tr');
+    const tdName = document.createElement('td'); tdName.className = 'nm';
+    tdName.textContent = item['姓名'] || '';
+    const tdAf = document.createElement('td');
+    tdAf.textContent = item['AF判定分類'] ? (item['AF判定分類'] + '（' + item['AF表別'] + '）') : (item['AF表別'] || '—');
+    const tdSel = document.createElement('td');
+    const sel = document.createElement('select');
+    sel.dataset.idx = item.index;
+    sel.innerHTML = '<option value="">－ 請選擇 －</option>' +
+      categoryFineOptions.map(o => '<option value="' + o + '">' + o + '</option>').join('');
+    tdSel.appendChild(sel);
+    tr.appendChild(tdName); tr.appendChild(tdAf); tr.appendChild(tdSel);
+    tbody.appendChild(tr);
+  });
+  table.appendChild(thead); table.appendChild(tbody);
+  el.appendChild(table);
+
+  const btn = document.createElement('button');
+  btn.className = 'btn-dl';
+  btn.style.marginTop = '10px';
+  btn.textContent = '儲存人員類別';
+  btn.onclick = saveCategoryAssignments;
+  el.appendChild(btn);
+}
+
+function saveCategoryAssignments() {
+  const selects = document.querySelectorAll('#category-unassigned select[data-idx]');
+  const assignments = {};
+  selects.forEach(s => { if (s.value) assignments[s.dataset.idx] = s.value; });
+  if (!Object.keys(assignments).length) { alert('請至少為一位人員選擇人員類別'); return; }
+  fetch('/categories/save', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({assignments})
+  }).then(r => r.json()).then(d => {
+    if (d.error) { alert(d.error); return; }
+    if (d.warning) alert(d.warning);
+    renderCategoryPanel(d.category);
+  }).catch(e => alert('儲存失敗：' + e.message));
+}
+
+function renderCategoryMismatch(list) {
+  const el = document.getElementById('category-mismatch');
+  el.innerHTML = '';
+  if (!list.length) {
+    const ok = document.createElement('div');
+    ok.className = 'ok-msg';
+    ok.textContent = '✔ 人員類別鉤稽：清冊人員類別與 AF 薪俸表別皆相符，無不一致。';
+    el.appendChild(ok);
+    return;
+  }
+  const warn = document.createElement('div');
+  warn.className = 'err-msg';
+  warn.textContent = '✗ 人員類別鉤稽發現 ' + list.length + ' 筆不一致：';
+  el.appendChild(warn);
+
+  const table = document.createElement('table');
+  table.className = 'cmp-tbl';
+  const thead = document.createElement('thead');
+  const trh = document.createElement('tr');
+  ['姓名', '清冊人員類別', '清冊官方分類', 'AF 表別', 'AF 判定分類', '原因'].forEach(h => {
+    const th = document.createElement('th'); th.textContent = h; trh.appendChild(th);
+  });
+  thead.appendChild(trh);
+  const tbody = document.createElement('tbody');
+  list.forEach(m => {
+    const tr = document.createElement('tr'); tr.className = 'x';
+    [m['姓名'], m['人員類別'], m['人員類別官方分類'], m['AF表別'], m['AF判定分類'], m['原因']].forEach((v, i) => {
+      const td = document.createElement('td');
+      if (i === 0) td.className = 'f';
+      td.textContent = v || '';
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(thead); table.appendChild(tbody);
+  const wrap = document.createElement('div');
+  wrap.className = 'tbl-wrap';
+  wrap.appendChild(table);
+  el.appendChild(wrap);
+
+  const dlBtn = document.createElement('button');
+  dlBtn.className = 'btn-dl';
+  dlBtn.style.marginTop = '10px';
+  dlBtn.textContent = '↓ 下載鉤稽結果（Excel）';
+  dlBtn.onclick = () => location.href = '/download-category-audit';
+  el.appendChild(dlBtn);
 }
 function setMsg(type, text) {
   // text 可能來自伺服器回傳的錯誤訊息（可能包含使用者檔案內的工作表名稱、
@@ -536,6 +698,10 @@ function resetAll() {
   document.getElementById('compare-section').style.display = 'none';
   document.getElementById('btn-audit').style.display = 'none';
   document.getElementById('school-title').textContent = '';
+  document.getElementById('category-section').style.display = 'none';
+  document.getElementById('category-summary').innerHTML = '';
+  document.getElementById('category-unassigned').innerHTML = '';
+  document.getElementById('category-mismatch').innerHTML = '';
   checkReady();
 }
 

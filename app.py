@@ -157,6 +157,117 @@ def school_key(af_name):
     return sn1 or (af_name or '_default')
 
 
+# ── 人員類別記憶（依身分證字號，不依學校分開）─────────────
+# 固定清冊格式是規定的，不能加欄；改成 aftool 自己記，跟 exclusions.json
+# 走一樣的模式：第一次遇到的身分證字號才需要人工指定，之後每月自動帶入。
+_category_lock = threading.Lock()
+
+
+def _category_file():
+    base = os.environ.get('DATA_DIR', '').strip() or app.root_path
+    try:
+        os.makedirs(base, exist_ok=True)
+    except Exception:
+        base = tempfile.gettempdir()
+    return os.path.join(base, 'person_categories.json')
+
+
+def load_person_categories():
+    """回傳 {身分證字號(正規化) : {'category': 細分類, 'name': 姓名, 'updated_at': ts}}"""
+    try:
+        with open(_category_file(), encoding='utf-8') as f:
+            d = json.load(f)
+    except Exception:
+        d = {}
+    return d
+
+
+def save_person_categories(updates):
+    """合併寫入 {身分證字號: {'category':..., 'name':...}}，只接受合法的細分類。"""
+    if not updates:
+        return load_person_categories()
+    with _category_lock:
+        d = load_person_categories()
+        now = int(time.time())
+        for pid, info in updates.items():
+            pid = _normalize_person_id(pid)
+            category = (info.get('category') or '').strip()
+            if not pid or category not in paycheck.FINE_CATEGORY_OPTIONS:
+                continue
+            d[pid] = {
+                'category': category,
+                'name': (info.get('name') or '').strip(),
+                'updated_at': now,
+            }
+        try:
+            with open(_category_file(), 'w', encoding='utf-8') as f:
+                json.dump(d, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            app.logger.warning(f'人員類別寫入失敗：{e}')
+        return d
+
+
+def compute_category_audit(records, columns):
+    """
+    人員類別鉤稽：
+    - 每人先看有沒有人工指定過的細分類（person_categories.json，依身分證字號），
+      roll-up 成官方五類；沒有指定過的人，退回用 AF 薪俸表別推導（向下相容）。
+    - 兩邊都能判定時互相比對，兜不起來的列進 mismatches。
+    - 從未指定過細分類、又有身分證字號可用的人，列進 unassigned 供介面詢問。
+    以 records 在清單中的索引（index）當作前端來回傳遞的識別碼，
+    避免把身分證字號送到瀏覽器。
+    """
+    id_col = next((c for c in PERSON_ID_COLS if c in columns), None)
+    name_col = '姓名' if '姓名' in columns else None
+    salary_col = '薪俸表別' if '薪俸表別' in columns else None
+
+    saved = load_person_categories()
+    summary = Counter()
+    unassigned = []
+    mismatches = []
+    no_id = 0
+
+    for idx, row in enumerate(records):
+        name = (row.get(name_col, '') if name_col else '') or ''
+        pid = _normalize_person_id(row.get(id_col, '')) if id_col else ''
+        af_code = (row.get(salary_col, '') if salary_col else '') or ''
+        af_official = paycheck.category_from_salary_table(af_code)
+
+        entry = saved.get(pid) if pid else None
+        fine = (entry or {}).get('category')
+        roster_official = paycheck.rollup_category(fine) if fine else None
+
+        bucket = roster_official or af_official or '未能判定'
+        summary[bucket] += 1
+
+        if not pid:
+            no_id += 1
+            continue
+        if not fine:
+            unassigned.append({
+                'index': idx, '姓名': name,
+                'AF表別': af_code, 'AF判定分類': af_official or '',
+            })
+            continue
+        if roster_official and af_official and roster_official != af_official:
+            mismatches.append({
+                'index': idx, '姓名': name,
+                '人員類別': fine, '人員類別官方分類': roster_official,
+                'AF表別': af_code, 'AF判定分類': af_official,
+                '原因': (f'清冊標示人員類別為「{fine}」（歸類為{roster_official}），'
+                        f'但 AF 薪俸表別 {af_code} 對應為{af_official}，兩者不符'),
+            })
+
+    return {
+        'summary': dict(summary),
+        'unassigned': unassigned,
+        'mismatches': mismatches,
+        'no_id_count': no_id,
+        'fine_options': paycheck.FINE_CATEGORY_OPTIONS,
+        'official_categories': paycheck.OFFICIAL_CATEGORIES,
+    }
+
+
 # ── OCR 版面記憶（依學校保存，不含任何薪資或個資）──────────
 _layout_lock = threading.Lock()
 
@@ -825,6 +936,11 @@ def process():
         preview_columns = [col for col in SIMPLE_COLS if col in result_df.columns]
         preview_df = result_df.loc[:, preview_columns].head(20).fillna('')
 
+        # 人員類別鉤稽：用完整的 result_df（含身分證字號、薪俸表別）在伺服器端算，
+        # 傳回瀏覽器的清單一律只帶 index，不帶身分證字號。
+        full_records = result_df.fillna('').to_dict(orient='records')
+        category = compute_category_audit(full_records, result_df.columns.tolist())
+
         return jsonify({
             'success': True,
             'counts': counts,
@@ -835,7 +951,8 @@ def process():
             'warnings': warnings,
             'school_name': school_name,
             'sn2': sn2,
-            'yearmonth': yearmonth
+            'yearmonth': yearmonth,
+            'category': category,
         })
 
     except KeyError as e:
@@ -846,6 +963,52 @@ def process():
         return jsonify({'error': '檔案格式錯誤，請確認上傳的是正確的 Excel 檔案（.xlsx 或 .xls），且檔案未損毀'}), 400
     except Exception as e:
         return jsonify({'error': '處理錯誤：' + str(e)}), 500
+
+
+@app.route('/categories/save', methods=['POST'])
+def categories_save():
+    """
+    儲存 Leo 在網頁上為某幾筆人員指定的人員類別。
+    前端只會送 index（本次排序結果中的列位置）+ 細分類，
+    這裡才依 index 從伺服器暫存的完整結果查回身分證字號，
+    寫進 person_categories.json，並回傳重新計算後的鉤稽結果。
+    """
+    r = get_current_result()
+    if not r:
+        return jsonify({'error': '尚無排序結果，請重新處理一次'}), 400
+
+    d = request.get_json(silent=True) or {}
+    assignments = d.get('assignments') or {}
+    if not isinstance(assignments, dict):
+        return jsonify({'error': '格式錯誤'}), 400
+
+    records = json.loads(r['data'])
+    columns = r['columns']
+    id_col = next((c for c in PERSON_ID_COLS if c in columns), None)
+    if not id_col:
+        return jsonify({'error': '這份資料沒有身分證字號欄位，無法指定人員類別'}), 400
+
+    updates = {}
+    skipped = []
+    for idx_str, category in assignments.items():
+        try:
+            idx = int(idx_str)
+            row = records[idx]
+        except (ValueError, IndexError):
+            continue
+        pid = (row.get(id_col) or '').strip()
+        if not pid:
+            skipped.append(row.get('姓名', ''))
+            continue
+        updates[pid] = {'category': category, 'name': row.get('姓名', '')}
+
+    save_person_categories(updates)
+    category = compute_category_audit(records, columns)
+    resp = {'ok': True, 'saved': len(updates), 'category': category}
+    if skipped:
+        resp['skipped'] = skipped
+        resp['warning'] = '以下人員缺少身分證字號，無法儲存人員類別：' + '、'.join(skipped)
+    return jsonify(resp)
 
 
 # ── 新增：薪資清冊 PDF 比對 ────────────────────────────────
@@ -1480,6 +1643,22 @@ def _build_audit_print_html(school_name, sn2, yearmonth, auto_print=False, inner
         + inner +
         '</body></html>'
     )
+
+
+@app.route('/download-category-audit')
+def download_category_audit():
+    """下載人員類別鉤稽結果（Excel）：逐人列出清冊人員類別與 AF 表別不一致的名單。"""
+    r = get_current_result()
+    if not r:
+        return '尚無資料可下載，請重新處理一次', 400
+    records = json.loads(r['data'])
+    category = compute_category_audit(records, r['columns'])
+    cols = ['姓名', '人員類別', '人員類別官方分類', 'AF表別', 'AF判定分類', '原因']
+    out = build_excel(category['mismatches'], cols)
+    school_name = r.get('school_name', '')
+    filename = f'人員類別鉤稽_{school_name or "未知學校"}.xlsx'
+    return send_file(out, as_attachment=True, download_name=filename,
+                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 
 @app.route('/download-audit')
