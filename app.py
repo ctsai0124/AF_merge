@@ -958,9 +958,16 @@ def build_sample_roster_xlsx():
 
 
 def build_sample_af_xlsx():
+    # 欄位名稱與順序逐一比對過 Leo 提供的真實 AF 範例檔（34 欄，pandas 讀出來
+    # 重複欄位會自動加 .1/.2... 後綴），確認完全一致，不是只憑程式碼推斷：
+    # 地域加給／福利／工作津貼／獎金這幾組在真實範例裡幾乎都是空白（僅視情況
+    # 才有值），保險／退撫提撥金這組則每人都有值，範例資料比照同樣的空/實分佈。
     cols = ['單位', '身分證字號', '姓名', '薪俸表別', '總金額', '支領數額', '待遇差額', '補發金額',
             '專業加給表別', '總金額.1', '支領數額.1', '待遇差額.1', '補發金額.1', '增支',
-            '職務加給表別', '總金額.2', '支領數額.2', '待遇差額.2', '補發金額.2']
+            '職務加給表別', '總金額.2', '支領數額.2', '待遇差額.2', '補發金額.2',
+            '地域加給表別', '總金額.3', '支領數額.3', '待遇差額.3', '補發金額.3',
+            '福利表別', '支領數額.4', '工作津貼', '支領數額.5', '獎金表別', '支領數額.6',
+            '保險表別', '政府負擔金額', '退撫提撥金表別', '政府負擔金額.1']
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.append(cols)
@@ -968,10 +975,17 @@ def build_sample_af_xlsx():
         salary = SAMPLE_SALARY_AMOUNT.get(p['af_code'], 30000)
         prof = SAMPLE_PROF_AMOUNT.get(p['af_code'], 15000)
         prof_code = SAMPLE_PROF_CODE.get(p['af_code'], 'B10021')
+        # 保險/退撫提撥金額只是陪襯用的政府負擔金額，粗略抓月薪的 5%/20% 湊個
+        # 合理數字即可，不影響任何實際計算邏輯（人員類別鉤稽只看薪俸表別）。
+        insurance_amt = round((salary + prof) * 0.05)
+        pension_amt = round((salary + prof) * 0.20)
         ws.append([
             p['dept'], p['id'], p['name'], p['af_code'], salary, salary, 0, 0,
             prof_code, prof, prof, 0, 0, 0,
             p['duty_code'], p['duty_amt'], p['duty_amt'], 0, 0,
+            '', '', '', '', '',
+            '', '', '', '', '', '',
+            'H0001', insurance_amt, 'I0001', pension_amt,
         ])
     out = io.BytesIO()
     wb.save(out)
