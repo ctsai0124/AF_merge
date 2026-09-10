@@ -7,13 +7,15 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CFG = json.load(open(os.path.join(HERE, 'config.json'), encoding='utf-8'))
 SERVER, KEY = CFG['server'].rstrip('/'), CFG['key']
 POLL_MIN, POLL_MAX = 3, 60
-WORKER_VERSION = 'v13'
+WORKER_VERSION = 'v14'
 
 sys.path.insert(0, HERE)
 from parse_tokens import (
     parse_tokens as parse_all,
     layout_diagnostics,
     _suspicious_name,
+    _is_two_line_horizontal,
+    group_rows,
 )
 
 DIAG_DIR = os.path.join(HERE, 'diagnostics')
@@ -74,12 +76,25 @@ def ocr(pdf_bytes, preferred_layout=None, job_id=''):
         f.write(pdf_bytes)
         pdf_path = f.name
     try:
-        out = subprocess.run(
-            ['swift', os.path.join(HERE, 'ocr_extract.swift'), pdf_path],
-            capture_output=True, timeout=300)
-        if out.returncode != 0:
-            raise RuntimeError(out.stderr.decode()[:300])
-        tokens = json.loads(out.stdout)
+        swift = os.path.join(HERE, 'ocr_extract.swift')
+
+        def recognize(scale):
+            out = subprocess.run(
+                ['swift', swift, pdf_path, '--scale', str(scale)],
+                capture_output=True, timeout=300)
+            if out.returncode != 0:
+                raise RuntimeError(out.stderr.decode()[:300])
+            return json.loads(out.stdout)
+
+        tokens = recognize(3)
+        if _is_two_line_horizontal(group_rows(tokens)):
+            # A3 雙行表在不同縮放倍率各有少數姓名／粗體金額失真。第二次
+            # 只補進姓名、職稱與薪資項目欄，避免把薪俸起始列重複計數。
+            standard = tokens
+            tokens = recognize(4)
+            tokens.extend(t for t in standard
+                          if t.get('x', 0) < 0.16
+                          or 0.19 <= t.get('x', 0) <= 0.46)
         people, layout = parse_all(tokens, preferred_layout=preferred_layout)
         print(f'  版面判定：{layout}', flush=True)
         ok = sum(1 for p in people if p.get('加總相符'))

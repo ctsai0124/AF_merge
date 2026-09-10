@@ -2,8 +2,9 @@
 """
 把 ocr_extract.swift 的 token JSON 還原成人員資料。
 
-支援兩種薪資清冊版面：
+支援三種薪資清冊版面：
   橫式：一人一列（編號 職稱 姓名 俸點 薪俸 …）
+  橫式雙行：一人分成薪資／補助兩行（姓名位於第二行）
   直式：一人一欄（左側為項目名稱，上方為序號／身分證字號／姓名／職稱）
 
 若清冊含身分證字號，會一併讀出並以檢查碼驗證，供伺服器端精確配對。
@@ -82,7 +83,10 @@ _SEP_CHARS = str.maketrans({
 
 
 def norm_text(s):
-    return (s or '').translate(_SEP_CHARS).strip()
+    s = (s or '').translate(_SEP_CHARS).strip()
+    # 同一個千分位符號偶爾同時被讀成「.，」，正規化後會變成兩個逗號。
+    # 收斂連續分隔符，讓「40.，760」仍可安全還原成「40,760」。
+    return re.sub(r',+', ',', s)
 
 
 def is_num(s):
@@ -251,11 +255,33 @@ def _layout_evidence(rows):
     return heads, fields, name_rows
 
 
+def _is_two_line_horizontal(rows):
+    """判斷一人資料分布在「薪資／政府補助」上下兩行的橫式清冊。"""
+    pages = {}
+    for r in rows:
+        if r:
+            pages.setdefault(r[0]['page'], []).append(r)
+
+    for page_rows in pages.values():
+        texts = [row_text(r) for r in page_rows[:8]]
+        header = ''.join(texts)
+        has_primary = all(label in header for label in
+                          ('姓名', '月支薪額', '專業加給'))
+        subsidy_labels = sum(label in header for label in
+                             ('公提勞退', '補助公保', '補助健保', '補助退撫'))
+        if has_primary and subsidy_labels >= 2:
+            return True
+    return False
+
+
 def detect_layout(rows):
     """
     直式版面的特徵：某一列以「姓名」開頭，後面接多個人名；
     且另有一列以「本俸／薪俸」等項目名稱開頭。
     """
+    if _is_two_line_horizontal(rows):
+        return 'horizontal'
+
     heads, fields, name_rows = _layout_evidence(rows)
     vertical = (
         (name_rows >= 1 and fields >= 1)
@@ -427,7 +453,8 @@ def _vertical_block(rows):
                     best['_conf'].append(t['conf'])
 
     # 鼓山各頁欄名雖會變形，但資料列順序固定。本俸起算的相對位置可作為
-    # 文字辨識失敗時的安全備援；精確讀到 FIELD_ALIAS 時仍以標準對應補強。
+    # 文字辨識失敗時的安全備援。若本頁已有至少三種可靠欄名（竹滬等
+    # 標準直式清冊），就完全停用位置推測，避免空白列消失後欄序位移。
     positional_fields = {
         0: '薪俸',
         1: '專業加給',
@@ -437,10 +464,18 @@ def _vertical_block(rows):
         8: '地域加給',
         9: '應發金額',
     }
-    for offset, key in positional_fields.items():
-        ri = base_idx + offset
-        if ri < len(rows):
-            assign_num(rows[ri], key)
+    exact_fields = {
+        FIELD_ALIAS[(r[0]['text'] or '').strip()]
+        for r in rows
+        if (r[0]['text'] or '').strip() in FIELD_ALIAS
+    }
+    if len(exact_fields) < 3:
+        for offset, key in positional_fields.items():
+            if key in exact_fields:
+                continue
+            ri = base_idx + offset
+            if ri < len(rows):
+                assign_num(rows[ri], key)
 
     for r in rows:
         label = (r[0]['text'] or '').strip()
@@ -503,6 +538,22 @@ def parse_vertical(rows):
             continue
         seen.add(key)
         uniq.append(p)
+
+    # 直式掃描偶爾只漏掉個別人的導師／特教加給，但印列應發總額仍正確。
+    # 僅在差額等於同份文件已明確讀到的導師特教金額時補回，並降低信心；
+    # 未出現在文件中的新金額不猜測。
+    known_duties = {p.get('導師特教', 0) for p in uniq
+                    if p.get('導師特教', 0) > 0}
+    for p in uniq:
+        if p.get('加總相符') or not p.get('應發金額'):
+            continue
+        diff = p.get('加總差額')
+        if diff in known_duties and 0 < diff <= 20000:
+            p['導師特教'] += diff
+            p['加總相符'] = True
+            p['加總差額'] = 0
+            p['薪資欄位推算'] = True
+            p['最低信心'] = min(p.get('最低信心', 1.0), 0.3)
     return uniq
 
 
@@ -645,6 +696,345 @@ def parse_horizontal_row(row):
     }
 
 
+def _header_column(page_rows, labels, fallback=None):
+    for r in page_rows[:8]:
+        for t in r:
+            text = (t.get('text') or '').strip()
+            if any(label in text for label in labels):
+                return t['x']
+    return fallback
+
+
+def _two_line_name(block, name_x, top_y):
+    """從第二行姓名欄取人名，並處理姓名與職稱黏成同一 token 的情形。"""
+    candidates = []
+    for t in block:
+        if abs(t.get('x', 0) - name_x) > 0.032:
+            continue
+        dy = t.get('y', top_y) - top_y
+        if not 0.006 <= dy <= 0.024:
+            continue
+
+        raw = (t.get('text') or '').strip()
+        runs = re.findall(r'[\u4e00-\u9fff]{2,10}', raw)
+        for run in runs:
+            pieces = [run]
+            if len(run) > 4:
+                # 常見錯誤是「姓名＋職稱」黏在一起；姓名通常位於字串前端。
+                pieces.extend((run[:3], run[:4], run[-3:], run[-4:]))
+            for piece in pieces:
+                if not is_name(piece) or _suspicious_name(piece):
+                    continue
+                score = (float(t.get('conf', 0))
+                         - abs(t.get('x', 0) - name_x) * 2
+                         - abs(dy - 0.014) * 2)
+                candidates.append((score, piece, t))
+
+    if not candidates:
+        return '', 0.0
+    _, name, token = max(candidates, key=lambda item: item[0])
+    return name, float(token.get('conf', 0))
+
+
+def _two_line_title(block, title_x, top_y):
+    parts = []
+    for t in block:
+        text = (t.get('text') or '').strip()
+        if (abs(t.get('x', 0) - title_x) <= 0.032
+                and abs(t.get('y', top_y) - top_y) <= 0.006
+                and text and not is_num(text)):
+            parts.append((t['x'], text))
+    return ' '.join(text for _, text in sorted(parts))
+
+
+def _two_line_amount(block, column_x, top_y, y_tol=0.006, x_tol=0.018):
+    """只讀第一行薪資欄，刻意排除第二行同 x 座標的政府補助數字。"""
+    candidates = []
+    for t in block:
+        text = t.get('text', '')
+        if (abs(t.get('x', 0) - column_x) <= x_tol
+                and abs(t.get('y', top_y) - top_y) <= y_tol
+                and is_num(text)):
+            value = to_int(text)
+            candidates.append((abs(t['x'] - column_x), -float(t.get('conf', 0)),
+                               value, t))
+    if not candidates:
+        return None, None
+    _, _, value, token = min(candidates)
+    return value, token
+
+
+def _infer_two_line_components(people):
+    """用同份清冊已辨識的欄值與應發金額補回少數漏讀欄位。"""
+    keys = ('薪俸', '主管加給', '專業加給', '_導師', '_特教')
+    observed = {key: {} for key in keys}
+    for p in people:
+        for key in keys:
+            value = p.get(key)
+            if value:
+                observed[key][value] = observed[key].get(value, 0) + 1
+
+    for p in people:
+        total = p.get('應發金額')
+        if not total:
+            continue
+        missing = [key for key in keys if p.get(key) is None]
+        if not missing:
+            continue
+
+        known_sum = sum(p.get(key) or 0 for key in keys if key not in missing)
+        target = total - known_sum
+        if target < 0:
+            continue
+
+        # 空白欄本來就代表 0；非零候選只取同份文件實際出現過的值。
+        choices = []
+        for key in missing:
+            vals = [0] + sorted(observed[key],
+                                key=lambda v: (-observed[key][v], v))
+            choices.append(vals)
+
+        solutions = []
+        def search(i, current, picked):
+            if current > target:
+                return
+            if i == len(missing):
+                if current == target:
+                    nonzero = sum(bool(v) for v in picked)
+                    popularity = sum(observed[k].get(v, 0)
+                                     for k, v in zip(missing, picked) if v)
+                    solutions.append((nonzero, -popularity, tuple(picked)))
+                return
+            for value in choices[i]:
+                search(i + 1, current + value, picked + [value])
+        search(0, 0, [])
+
+        if not solutions:
+            continue
+        # 優先最少補值，再選文件中出現頻率最高者；同分才視為不確定。
+        solutions.sort()
+        best = solutions[0]
+        if len(solutions) > 1 and solutions[1][:2] == best[:2]:
+            continue
+        for key, value in zip(missing, best[2]):
+            p[key] = value
+        if any(best[2]):
+            p['_component_inferred'] = True
+
+
+def _reconcile_two_line_page_totals(people, page_totals):
+    """以每頁印列小計補回漏讀欄，且不跨頁挪用金額。"""
+    keys = ('薪俸', '主管加給', '專業加給', '_導師', '_特教')
+    observed = {key: {} for key in keys}
+    for p in people:
+        for key in keys:
+            value = p.get(key)
+            if value:
+                observed[key][value] = observed[key].get(value, 0) + 1
+
+    for pno, expected in page_totals.items():
+        page_people = [p for p in people if p.get('_page') == pno]
+        for key in keys:
+            target = expected.get(key)
+            if target is None:
+                continue
+            missing = [p for p in page_people if p.get(key) is None]
+            known = sum(p.get(key) or 0 for p in page_people if p.get(key) is not None)
+            residual = target - known
+            if not missing or residual < 0:
+                continue
+            if residual == 0:
+                for p in missing:
+                    p[key] = 0
+                continue
+            if len(missing) == 1:
+                missing[0][key] = residual
+                missing[0]['_component_inferred'] = True
+                continue
+
+            evidenced = [p for p in missing if p.get('_column_evidence', {}).get(key)]
+            if len(evidenced) == 1:
+                # 該格確實有墨跡但數字被黏合；用頁小計的唯一差額修復。
+                for p in missing:
+                    p[key] = residual if p is evidenced[0] else 0
+                evidenced[0]['_component_inferred'] = True
+                continue
+
+            # 多人同欄同時漏讀時，只接受「每人差額完全相同且該值已在本檔
+            # 其他列出現」的情形；不排列組合猜測每個人應拿哪一個金額。
+            if residual % len(missing):
+                continue
+            shared = residual // len(missing)
+            if shared not in observed[key]:
+                continue
+            for p in missing:
+                p[key] = shared
+                if shared:
+                    p['_component_inferred'] = True
+
+
+def parse_horizontal_two_line(rows):
+    """解析一人分成「薪資／補助」上下兩行的橫式清冊。"""
+    pages = {}
+    for r in rows:
+        if r:
+            pages.setdefault(r[0]['page'], []).append(r)
+
+    out = []
+    page_totals = {}
+    for pno in sorted(pages):
+        page_rows = pages[pno]
+        salary_x = _header_column(page_rows, ('月支薪額',))
+        name_x = _header_column(page_rows, ('姓名',))
+        if salary_x is None or name_x is None:
+            continue
+
+        prof_x = _header_column(page_rows, ('專業加給',), salary_x + 0.045)
+        mgr_x = _header_column(page_rows, ('主管加給',), salary_x + 0.09)
+        teacher_x = _header_column(page_rows, ('導師職加', '導師加給'),
+                                   salary_x + 0.135)
+        special_x = _header_column(page_rows, ('特教職加', '特教加給'),
+                                   salary_x + 0.18)
+        title_x = _header_column(page_rows, ('職稱',), name_x + 0.03)
+
+        gross_x = None
+        for r in page_rows[:8]:
+            for t in r:
+                text = (t.get('text') or '').strip()
+                if 0.40 <= t.get('x', 0) <= 0.47 and '應' in text and '金額' in text:
+                    gross_x = t['x']
+                    break
+            if gross_x is not None:
+                break
+        if gross_x is None:
+            gross_x = special_x + 0.087
+
+        # 每頁底部都印有本頁小計；它是修復個別欄位漏讀最可靠的約束。
+        footer_labels = [t for r in page_rows for t in r
+                         if t.get('y', 0) > 0.80
+                         and any(word in (t.get('text') or '')
+                                 for word in ('合計', '小計'))]
+        footer_y = min((t['y'] for t in footer_labels), default=None)
+        total_base = [t for r in page_rows for t in r
+                      if footer_y is not None
+                      and abs(t.get('y', 0) - footer_y) <= 0.02
+                      and abs(t.get('x', 0) - salary_x) <= 0.018
+                      and is_num(t.get('text', ''))]
+        if total_base:
+            total_base_token = max(total_base, key=lambda t: abs(to_int(t['text'])))
+            total_tokens = [t for r in page_rows for t in r]
+            totals = {}
+            for key, x in (('薪俸', salary_x), ('專業加給', prof_x),
+                           ('主管加給', mgr_x), ('_導師', teacher_x),
+                           ('_特教', special_x)):
+                totals[key], _ = _two_line_amount(
+                    total_tokens, x, total_base_token['y'], y_tol=0.006)
+            # 小計欄空白在此版面明確代表 0，不是 OCR 漏讀。
+            page_totals[pno] = {key: value or 0 for key, value in totals.items()}
+
+        name_header_y = max(
+            t['y'] for r in page_rows[:8] for t in r
+            if (t.get('text') or '').strip() == '姓名')
+        total_ys = [t['y'] for r in page_rows for t in r
+                    if t['y'] > name_header_y + 0.01
+                    and any(word in (t.get('text') or '')
+                            for word in ('合計', '小計'))]
+        body_end_y = min(total_ys) - 0.01 if total_ys else 0.98
+
+        starts = []
+        for ri, r in enumerate(page_rows):
+            base_candidates = [
+                t for t in r
+                if abs(t.get('x', 0) - salary_x) <= 0.018
+                and is_num(t.get('text', ''))
+                and 15000 <= abs(to_int(t.get('text', ''))) <= 150000
+                and name_header_y < t.get('y', 0) < body_end_y
+            ]
+            if base_candidates:
+                base = min(base_candidates, key=lambda t: abs(t['x'] - salary_x))
+                starts.append((ri, base))
+
+        for order, (start_i, base_token) in enumerate(starts):
+            end_i = starts[order + 1][0] if order + 1 < len(starts) else len(page_rows)
+            block = [t for r in page_rows[start_i:end_i] for t in r
+                     if t.get('y', 0) < body_end_y]
+            top_y = base_token['y']
+
+            name, name_conf = _two_line_name(block, name_x, top_y)
+            if not name:
+                continue
+            title = _two_line_title(block, title_x, top_y)
+
+            values = {}
+            column_evidence = {}
+            value_tokens = []
+            for key, x in (('薪俸', salary_x), ('專業加給', prof_x),
+                           ('主管加給', mgr_x), ('_導師', teacher_x),
+                           ('_特教', special_x)):
+                column_evidence[key] = any(
+                    abs(t.get('x', 0) - x) <= 0.018
+                    and abs(t.get('y', top_y) - top_y) <= 0.006
+                    and (t.get('text') or '').strip()
+                    for t in block)
+                value, source = _two_line_amount(block, x, top_y)
+                upper = 150000 if key == '薪俸' else 100000
+                if value is not None and not (0 <= value <= upper):
+                    value, source = None, None
+                values[key] = value
+                if source:
+                    value_tokens.append(source)
+            gross, gross_token = _two_line_amount(
+                block, gross_x, top_y, y_tol=0.011, x_tol=0.021)
+            if gross is not None and not (15000 <= gross <= 250000):
+                gross, gross_token = None, None
+            if gross_token:
+                value_tokens.append(gross_token)
+
+            pid = next(((t.get('text') or '').strip().upper() for t in block
+                        if looks_like_id(t.get('text', ''))), '')
+            out.append({
+                '姓名': name, '姓名信心': round(name_conf, 3),
+                '職稱': title, '身分證': pid,
+                '身分證有效': valid_id(pid),
+                **values, '應發金額': gross,
+                '_component_inferred': False,
+                '_column_evidence': column_evidence,
+                '_value_conf': [float(t.get('conf', 0)) for t in value_tokens],
+                '_page': pno, '_order': order,
+            })
+
+    _infer_two_line_components(out)
+    _reconcile_two_line_page_totals(out, page_totals)
+
+    clean = []
+    for p in out:
+        for key in ('薪俸', '主管加給', '專業加給', '_導師', '_特教'):
+            if p.get(key) is None:
+                p[key] = 0
+        duty = p.pop('_導師') + p.pop('_特教')
+        computed = (p['薪俸'] + p['主管加給'] + p['專業加給'] + duty)
+        total_inferred = not p.get('應發金額') or p['應發金額'] != computed
+        if total_inferred and computed > 0:
+            p['應發金額'] = computed
+        confidence = [p.pop('姓名信心'), *p.pop('_value_conf')]
+        p.pop('_column_evidence', None)
+        if p.pop('_component_inferred') or total_inferred:
+            confidence.append(0.3)
+
+        p.update({
+            '導師特教': duty, '其他加給': 0,
+            '應發金額推算': total_inferred,
+            '加總相符': (p['應發金額'] > 0 and computed == p['應發金額']
+                     and not total_inferred),
+            '加總差額': p['應發金額'] - computed if p['應發金額'] else None,
+            '最低信心': round(min(confidence or [0]), 3),
+        })
+        p.pop('_page', None)
+        p.pop('_order', None)
+        clean.append(p)
+    return clean
+
+
 def parse_row(row):
     """保留舊介面：單列橫式解析"""
     return parse_horizontal_row(row)
@@ -655,6 +1045,8 @@ def parse_row(row):
 def _parse_as(rows, layout):
     if layout == 'vertical':
         return parse_vertical(rows)
+    if _is_two_line_horizontal(rows):
+        return parse_horizontal_two_line(rows)
     return [p for p in (parse_horizontal_row(r) for r in rows) if p]
 
 

@@ -17,7 +17,7 @@ func tokens(from image: CGImage, page: Int) -> [Token] {
     var out: [Token] = []
     let req = VNRecognizeTextRequest()
     req.recognitionLevel = .accurate
-    req.usesLanguageCorrection = false
+    req.usesLanguageCorrection = true
     req.recognitionLanguages = ["zh-Hant", "en-US"]
 
     let handler = VNImageRequestHandler(cgImage: image, options: [:])
@@ -50,10 +50,16 @@ func tokens(from image: CGImage, page: Int) -> [Token] {
 
 let args = CommandLine.arguments
 guard args.count > 1 else {
-    FileHandle.standardError.write("用法：swift ocr_extract.swift 檔案.pdf\n".data(using: .utf8)!)
+    FileHandle.standardError.write("用法：swift ocr_extract.swift 檔案.pdf [--scale 3]\n".data(using: .utf8)!)
     exit(1)
 }
-guard let doc = PDFDocument(url: URL(fileURLWithPath: args[1])) else {
+let pdfPath = args[1]
+var renderScale: CGFloat = 3.0
+if let scaleIndex = args.firstIndex(of: "--scale"), scaleIndex + 1 < args.count,
+   let value = Double(args[scaleIndex + 1]), value >= 2.0, value <= 6.0 {
+    renderScale = CGFloat(value)
+}
+guard let doc = PDFDocument(url: URL(fileURLWithPath: pdfPath)) else {
     FileHandle.standardError.write("無法開啟 PDF\n".data(using: .utf8)!)
     exit(1)
 }
@@ -62,7 +68,9 @@ var all: [Token] = []
 for pi in 0..<doc.pageCount {
     guard let page = doc.page(at: pi) else { continue }
     let rect = page.bounds(for: .mediaBox)
-    let scale: CGFloat = 3.0
+    // 保留既有清冊驗證過的 3 倍預設；特殊 A3 雙行版面另由 worker 以
+    // 4 倍補辨一次，利用兩次辨識信心互補，不影響其他學校的既有結果。
+    let scale = renderScale
     // PDFPage.draw 會套用頁面的 /Rotate，但 bounds(for:) 回傳的是尚未旋轉的
     // MediaBox。90°／270°頁面若仍建立橫向畫布，旋轉後的直向內容會被裁掉。
     let rotation = ((page.rotation % 360) + 360) % 360
