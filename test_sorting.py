@@ -56,6 +56,35 @@ class SortAfByRosterTests(unittest.TestCase):
         self.assertEqual(result['清冊序號'].tolist(), [1, 2])
         self.assertEqual(warnings, [])
 
+    def test_optional_roster_people_category_is_carried_to_result(self):
+        roster = pd.DataFrame([{
+            '序號': 1, '姓名': '王小明', '人員種類': '政務人員',
+        }])
+        af = af_rows([{
+            '姓名': '王小明', '身分證字號': 'A111111111', '薪俸表別': 'A0001',
+        }])
+
+        result, warnings = sort_af_by_roster(roster, af)
+
+        self.assertEqual(result.loc[0, '人員種類'], '政務人員')
+        self.assertEqual(warnings, [])
+
+    def test_invalid_roster_people_category_has_clear_error(self):
+        roster = pd.DataFrame([{
+            '序號': 1, '姓名': '王小明', '人員種類': '主任',
+        }])
+        af = af_rows([{
+            '姓名': '王小明', '身分證字號': 'A111111111', '薪俸表別': 'A0001',
+        }])
+
+        # 舊版曾使用細職稱，仍會相容歸入大類，不中斷使用。
+        result, _warnings = sort_af_by_roster(roster, af)
+        self.assertEqual(result.loc[0, '人員種類'], '一般人員')
+
+        roster.loc[0, '人員種類'] = '無此分類'
+        with self.assertRaisesRegex(ValueError, '人員種類僅可填'):
+            sort_af_by_roster(roster, af)
+
     def test_same_names_match_by_id_without_duplicate_rows(self):
         roster = pd.DataFrame([
             {'序號': 1, '姓名': '王同名', '身分證字號': 'A111111111'},

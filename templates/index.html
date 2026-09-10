@@ -114,6 +114,10 @@ tbody td.name-col{text-align:left;font-weight:600}
 .act-box .msg{margin-top:11px}
 .act-box .msg:empty{margin-top:0}
 .act-box .ok-msg,.act-box .warn-msg,.act-box .err-msg{font-size:11px;padding:7px 10px;line-height:1.7}
+.cross-reason{margin:10px 0 12px}
+.cross-reason label{display:block;font-size:11px;font-weight:700;color:#34495e;margin-bottom:5px}
+.cross-reason textarea{width:100%;min-height:64px;resize:vertical;border:1px solid #bcc6d2;padding:8px 10px;font:12px/1.55 inherit;background:#fff}
+.cross-reason textarea:focus{outline:2px solid #9bb7d1;outline-offset:1px}
 .act-order{background:#eef3f9;border:1px solid #c7d8ea;padding:7px 12px;font-size:11px;color:#1a3a5c;line-height:1.7;margin-bottom:14px}
 .cmp-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;margin:16px 0 14px}
 .cmp-card{border:1px solid #d5dae2;background:#f7f9fb;padding:10px 12px;text-align:center}
@@ -244,7 +248,8 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,de
           </div>
           <div class="upload-block-body">
             <div class="upload-desc" id="desc-roster">
-              欄位：序號（也接受編號、號碼、項次、流水號）、姓名、身分證字號（同名者必填）。<br>
+              欄位：序號（也接受編號、號碼、項次、流水號）、姓名、身分證字號（同名者必填）、人員種類（選填）。<br>
+              人員種類可選一般人員、職工、約聘雇人員或政務人員；有填時優先採用，空白時由既有記憶或 AF 表別判定。<br>
               檔名可自行命名；優先讀取 <span class="em">input</span> 工作表，找不到時自動改讀第一個工作表。<br>
               請依薪資清冊正確順序填入，每月人員異動時更新。<br>
               支援格式：<span class="em">.xlsx　.xls</span>
@@ -304,10 +309,10 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,de
       </div>
       <div class="action-bar" style="margin-top:14px">
         <button class="btn-print" type="button" id="btn-sample" onclick="loadSampleData()">🎲 套用範例資料試用看看</button>
-        <span style="font-size:11px;color:#888">還沒有固定清冊／AF 資料檔嗎？點這裡一鍵套用範例資料（虛構人員），立即體驗排序與人員類別鉤稽功能。</span>
+        <span style="font-size:11px;color:#888">還沒有固定清冊／AF 資料檔嗎？點這裡一鍵套用範例資料（虛構人員），立即體驗排序與人員種類鉤稽功能。</span>
       </div>
       <div class="warn-msg" id="sample-banner-upload" style="display:none;margin-top:10px">
-        🎲 目前顯示為<strong>範例資料</strong>（虛構人員、虛構「示範國小」，非真實資料），僅供試用介面與人員類別鉤稽功能。請上傳您實際的固定清冊與 AF 資料檔，即可自動取代範例資料。
+        🎲 目前顯示為<strong>範例資料</strong>（虛構人員、虛構「示範國小」，非真實資料），僅供試用介面與人員種類鉤稽功能。請上傳您實際的固定清冊與 AF 資料檔，即可自動取代範例資料。
       </div>
       <div class="hint-box">
         <strong>※ 注意：</strong>一般人員以姓名配對；偵測到同名同姓時，該姓名群組會改用身分證字號配對，缺少證號即停止排序。姓名仍須與 AF 資料檔完全一致（含全名、不可有空格）。
@@ -343,7 +348,11 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,de
         </div>
         <div class="act-box act-box-full">
           <h3>③ 產製互核結果表</h3>
-          <div class="d">依「薪資互核結果表」官方範本，一次產出單列＋表頭的 Excel（機關單位／各類人員類別／各表別代碼與金額，差異原因等留白供人工填寫）。<br>需上傳：固定清冊檔＋AF 資料檔（必填）。薪資清冊 PDF 為<strong>選填</strong>：有上傳就會解析 PDF 金額填入右半邊、自動比對建議 Y/N（若無法辨識則右半邊與 Y/N 留空，仍可下載後自行填入）；<strong>不上傳就直接以 AF 算出的數字同時填入左右兩邊，互核相符自動填 Y</strong>（此時並非真的核對過薪資清冊，只是形式一致，請自行注意）。</div>
+          <div class="d">依您確認的「薪資互核結果表」正式版型產出 Excel，人員種類採大分類，不要求細選職稱。<br>需上傳：固定清冊檔＋AF 資料檔（必填）。薪資清冊 PDF 為<strong>選填</strong>：有上傳就會解析 PDF 金額填入右半邊、自動比對建議 Y/N（若無法辨識則右半邊與 Y/N 留空，仍可下載後自行填入）；<strong>不上傳就直接以 AF 算出的數字同時填入左右兩邊，互核相符自動填 Y</strong>（此時並非真的核對過薪資清冊，只是形式一致，請自行注意）。</div>
+          <div class="cross-reason">
+            <label for="cross-difference-reason">差異原因（選填）</label>
+            <textarea id="cross-difference-reason" maxlength="1000" placeholder="一般情況留白；若有考績晉級、補發或其他特殊差異，可直接在這裡說明，下載時會帶入正式表格。"></textarea>
+          </div>
           <div class="action-bar">
             <button class="btn-cross" id="btn-cross" onclick="doCrossCheck()" disabled>產製互核結果表</button>
             <div class="loader" id="cross-loader"><div class="spin"></div>產製中...</div>
@@ -399,7 +408,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,de
   </div>
 
   <div class="section" id="category-section" style="display:none">
-    <h2 class="section-head"><span class="step-badge">5</span>人員類別與鉤稽</h2>
+    <h2 class="section-head"><span class="step-badge">5</span>人員種類與鉤稽</h2>
     <div class="section-body">
       <div id="category-summary"></div>
       <div id="category-unassigned"></div>
@@ -511,6 +520,8 @@ async function doCrossCheck() {
   // 薪資清冊 PDF 是選填：使用者這次若沒選 PDF 檔案，就不附上這個欄位，
   // 後端會直接把 AF 算出的數字同時填入右半邊、互核相符自動填 Y。
   if (files.pdf) fd.append('salary_pdf', files.pdf);
+  const reason = document.getElementById('cross-difference-reason').value.trim();
+  if (reason) fd.append('difference_reason', reason);
   const btn = document.getElementById('btn-cross');
   const loader = document.getElementById('cross-loader');
   const msg = document.getElementById('cross-msg');
@@ -601,7 +612,7 @@ async function doProcess() {
       setCounts(data.counts);
       updateSampleBanners();
 
-      // 範例資料：自動模擬「Leo已經為部分人員存過人員類別」，讓使用者一套用
+      // 範例資料：自動模擬「已經為部分人員存過人員種類」，讓使用者一套用
       // 就能立刻看到「已一致」「鉤稽抓到不一致」「待指定」三種情境同時呈現，
       // 走的是跟手動存檔完全相同的 /categories/save 端點，不是另外算好塞資料。
       if (isSampleDataActive) {
@@ -665,11 +676,11 @@ async function applySampleCategoryAssignments(category) {
     const saveData = await saveRes.json();
     if (saveData.category) renderCategoryPanel(saveData.category);
   } catch (e) {
-    console.error('範例人員類別自動示範失敗：', e);
+    console.error('範例人員種類自動示範失敗：', e);
   }
 }
 
-/* ── 人員類別與鉤稽 ── */
+/* ── 人員種類與鉤稽 ── */
 function renderCategoryPanel(cat) {
   const sec = document.getElementById('category-section');
   if (!cat) { sec.style.display = 'none'; return; }
@@ -702,7 +713,7 @@ function renderCategoryPanel(cat) {
   if (cat.no_id_count) {
     const note = document.createElement('div');
     note.className = 'warn-msg';
-    note.textContent = '⚠ 有 ' + cat.no_id_count + ' 人固定清冊未填身分證字號，無法記憶人員類別，暫以 AF 薪俸表別判定分類';
+    note.textContent = '⚠ 有 ' + cat.no_id_count + ' 人未填身分證字號，網站無法保存種類記憶；本次仍會依固定清冊欄位或 AF 薪俸表別判定';
     sumEl.appendChild(note);
   }
 
@@ -720,14 +731,14 @@ function renderCategoryUnassigned(list) {
 
   const box = document.createElement('div');
   box.className = 'ex-note';
-  box.textContent = '以下 ' + list.length + ' 人第一次出現，尚未指定人員類別（指定後下個月會自動記住，不必重填）：';
+  box.textContent = '以下 ' + list.length + ' 人第一次出現，尚未指定人員種類（指定後下個月會自動記住，不必重填）：';
   el.appendChild(box);
 
   const table = document.createElement('table');
   table.className = 'rev-tbl';
   const thead = document.createElement('thead');
   const trh = document.createElement('tr');
-  ['姓名', 'AF 薪俸表別判定', '指定人員類別'].forEach(h => {
+  ['姓名', 'AF 薪俸表別判定', '指定人員種類'].forEach(h => {
     const th = document.createElement('th'); th.textContent = h; trh.appendChild(th);
   });
   thead.appendChild(trh);
@@ -753,7 +764,7 @@ function renderCategoryUnassigned(list) {
   const btn = document.createElement('button');
   btn.className = 'btn-dl';
   btn.style.marginTop = '10px';
-  btn.textContent = '儲存人員類別';
+  btn.textContent = '儲存人員種類';
   btn.onclick = saveCategoryAssignments;
   el.appendChild(btn);
 }
@@ -762,7 +773,7 @@ function saveCategoryAssignments() {
   const selects = document.querySelectorAll('#category-unassigned select[data-idx]');
   const assignments = {};
   selects.forEach(s => { if (s.value) assignments[s.dataset.idx] = s.value; });
-  if (!Object.keys(assignments).length) { alert('請至少為一位人員選擇人員類別'); return; }
+  if (!Object.keys(assignments).length) { alert('請至少為一位人員選擇人員種類'); return; }
   fetch('/categories/save', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({assignments})
@@ -779,27 +790,27 @@ function renderCategoryMismatch(list) {
   if (!list.length) {
     const ok = document.createElement('div');
     ok.className = 'ok-msg';
-    ok.textContent = '✔ 人員類別鉤稽：清冊人員類別與 AF 薪俸表別皆相符，無不一致。';
+    ok.textContent = '✔ 人員種類鉤稽：已指定種類與 AF 薪俸表別皆相符，無不一致。';
     el.appendChild(ok);
     return;
   }
   const warn = document.createElement('div');
   warn.className = 'err-msg';
-  warn.textContent = '✗ 人員類別鉤稽發現 ' + list.length + ' 筆不一致：';
+  warn.textContent = '✗ 人員種類鉤稽發現 ' + list.length + ' 筆不一致：';
   el.appendChild(warn);
 
   const table = document.createElement('table');
   table.className = 'cmp-tbl';
   const thead = document.createElement('thead');
   const trh = document.createElement('tr');
-  ['姓名', '清冊人員類別', '清冊官方分類', 'AF 表別', 'AF 判定分類', '原因'].forEach(h => {
+  ['姓名', '已指定人員種類', 'AF 表別', 'AF 判定種類', '原因'].forEach(h => {
     const th = document.createElement('th'); th.textContent = h; trh.appendChild(th);
   });
   thead.appendChild(trh);
   const tbody = document.createElement('tbody');
   list.forEach(m => {
     const tr = document.createElement('tr'); tr.className = 'x';
-    [m['姓名'], m['人員類別'], m['人員類別官方分類'], m['AF表別'], m['AF判定分類'], m['原因']].forEach((v, i) => {
+    [m['姓名'], m['人員類別'], m['AF表別'], m['AF判定分類'], m['原因']].forEach((v, i) => {
       const td = document.createElement('td');
       if (i === 0) td.className = 'f';
       td.textContent = v || '';
@@ -816,7 +827,7 @@ function renderCategoryMismatch(list) {
   const dlBtn = document.createElement('button');
   dlBtn.className = 'btn-dl';
   dlBtn.style.marginTop = '10px';
-  dlBtn.textContent = '↓ 下載鉤稽結果（Excel）';
+  dlBtn.textContent = '↓ 下載人員種類不一致明細（Excel）';
   dlBtn.onclick = () => location.href = '/download-category-audit';
   el.appendChild(dlBtn);
 }
@@ -879,6 +890,8 @@ function resetAll() {
   });
   document.getElementById('msg').innerHTML = '';
   document.getElementById('cmp-msg').innerHTML = '';
+  document.getElementById('cross-msg').innerHTML = '';
+  document.getElementById('cross-difference-reason').value = '';
   document.getElementById('cmp-result').innerHTML = '';
   document.getElementById('result-section').style.display = 'none';
   document.getElementById('compare-section').style.display = 'none';

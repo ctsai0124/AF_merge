@@ -4,6 +4,7 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 import io, os, json, re, tempfile, subprocess, unicodedata, uuid, hmac
 import html as _html
+from copy import copy
 from functools import wraps
 from zipfile import BadZipFile
 from docx import Document
@@ -21,8 +22,8 @@ app.config.update(
     SESSION_COOKIE_SAMESITE='Lax',  # 降低跨站請求偽造（CSRF）風險
 )
 
-APP_VERSION = 'v1.3.11'
-BUILD_VERSION = '2026.09.10.1'
+APP_VERSION = 'v1.3.12'
+BUILD_VERSION = '2026.09.10.2'
 
 
 def _is_sensitive_response(path):
@@ -118,6 +119,7 @@ NUM_COLS = {'清冊序號', '總金額', '支領數額', '待遇差額', '補發
             '總金額.3', '支領數額.3', '待遇差額.3', '補發金額.3'}
 
 PERSON_ID_COLS = ('身分證字號', '身分證統一編號', '身分證')
+ROSTER_CATEGORY_COLS = ('人員種類', '人員類別')
 ROSTER_SEQUENCE_COLS = (
     '序號', '編號', '號碼', '項次', '流水號', '序次', '次序', '排序', '排序號', 'NO', 'NUMBER'
 )
@@ -228,9 +230,9 @@ def school_key(af_name):
     return sn1 or (af_name or '_default')
 
 
-# ── 人員類別記憶（依身分證字號，不依學校分開）─────────────
-# 固定清冊格式是規定的，不能加欄；改成 aftool 自己記，跟 exclusions.json
-# 走一樣的模式：第一次遇到的身分證字號才需要人工指定，之後每月自動帶入。
+# ── 人員種類記憶（依身分證字號，不依學校分開）─────────────
+# 固定清冊現在可直接填「人員種類」並由使用者留存、逐月沿用；網站端仍以
+# 身分證字號保存一份備援記憶，兼容尚未補上新欄位的舊固定清冊。
 _category_lock = threading.Lock()
 
 
@@ -244,7 +246,7 @@ def _category_file():
 
 
 def load_person_categories():
-    """回傳 {身分證字號(正規化) : {'category': 細分類, 'name': 姓名, 'updated_at': ts}}"""
+    """回傳 {身分證字號(正規化) : {'category': 人員種類, 'name': 姓名, 'updated_at': ts}}"""
     try:
         with open(_category_file(), encoding='utf-8') as f:
             d = json.load(f)
@@ -254,7 +256,7 @@ def load_person_categories():
 
 
 def save_person_categories(updates):
-    """合併寫入 {身分證字號: {'category':..., 'name':...}}，只接受合法的細分類。"""
+    """合併寫入 {身分證字號: {'category':..., 'name':...}}，只接受大類選項。"""
     if not updates:
         return load_person_categories()
     with _category_lock:
@@ -280,17 +282,18 @@ def save_person_categories(updates):
 
 def compute_category_audit(records, columns):
     """
-    人員類別鉤稽：
-    - 每人先看有沒有人工指定過的細分類（person_categories.json，依身分證字號），
-      roll-up 成官方五類；沒有指定過的人，退回用 AF 薪俸表別推導（向下相容）。
+    人員種類鉤稽：
+    - 每人先看固定清冊有沒有指定大類，再看 person_categories.json 的身分證記憶；
+      舊資料若存的是細職稱會自動歸類，沒有指定過的人則用 AF 薪俸表別推導。
     - 兩邊都能判定時互相比對，兜不起來的列進 mismatches。
-    - 從未指定過細分類、又有身分證字號可用的人，列進 unassigned 供介面詢問。
+    - 從未指定過種類、又有身分證字號可用的人，列進 unassigned 供介面詢問。
     以 records 在清單中的索引（index）當作前端來回傳遞的識別碼，
     避免把身分證字號送到瀏覽器。
     """
     id_col = next((c for c in PERSON_ID_COLS if c in columns), None)
     name_col = '姓名' if '姓名' in columns else None
     salary_col = '薪俸表別' if '薪俸表別' in columns else None
+    roster_category_col = next((c for c in ROSTER_CATEGORY_COLS if c in columns), None)
 
     saved = load_person_categories()
     summary = Counter()
@@ -304,28 +307,31 @@ def compute_category_audit(records, columns):
         af_code = (row.get(salary_col, '') if salary_col else '') or ''
         af_official = paycheck.category_from_salary_table(af_code)
 
+        explicit_category = row.get(roster_category_col, '') if roster_category_col else ''
+        roster_official = paycheck.rollup_category(explicit_category)
         entry = saved.get(pid) if pid else None
-        fine = (entry or {}).get('category')
-        roster_official = paycheck.rollup_category(fine) if fine else None
+        saved_category = (entry or {}).get('category')
+        remembered_official = paycheck.rollup_category(saved_category) if saved_category else None
+        selected_category = roster_official or remembered_official
 
-        bucket = roster_official or af_official or '未能判定'
+        bucket = selected_category or af_official or '未能判定'
         summary[bucket] += 1
 
         if not pid:
             no_id += 1
+        if not selected_category:
+            if pid:
+                unassigned.append({
+                    'index': idx, '姓名': name,
+                    'AF表別': af_code, 'AF判定分類': af_official or '',
+                })
             continue
-        if not fine:
-            unassigned.append({
-                'index': idx, '姓名': name,
-                'AF表別': af_code, 'AF判定分類': af_official or '',
-            })
-            continue
-        if roster_official and af_official and roster_official != af_official:
+        if selected_category and af_official and selected_category != af_official:
             mismatches.append({
                 'index': idx, '姓名': name,
-                '人員類別': fine, '人員類別官方分類': roster_official,
+                '人員類別': selected_category, '人員類別官方分類': selected_category,
                 'AF表別': af_code, 'AF判定分類': af_official,
-                '原因': (f'清冊標示人員類別為「{fine}」（歸類為{roster_official}），'
+                '原因': (f'已指定人員種類為「{selected_category}」，'
                         f'但 AF 薪俸表別 {af_code} 對應為{af_official}，兩者不符'),
             })
 
@@ -337,6 +343,21 @@ def compute_category_audit(records, columns):
         'fine_options': paycheck.FINE_CATEGORY_OPTIONS,
         'official_categories': paycheck.OFFICIAL_CATEGORIES,
     }
+
+
+def remember_roster_categories(records, columns):
+    """把固定清冊中明確填寫的人員種類同步到既有身分證記憶。"""
+    id_col = next((c for c in PERSON_ID_COLS if c in columns), None)
+    category_col = next((c for c in ROSTER_CATEGORY_COLS if c in columns), None)
+    if not id_col or not category_col:
+        return
+    updates = {}
+    for row in records:
+        category = paycheck.rollup_category(row.get(category_col, ''))
+        pid = _normalize_person_id(row.get(id_col, ''))
+        if pid and category:
+            updates[pid] = {'category': category, 'name': row.get('姓名', '')}
+    save_person_categories(updates)
 
 
 # ── OCR 版面記憶（依學校保存，不含任何薪資或個資）──────────
@@ -689,8 +710,28 @@ def sort_af_by_roster(roster_df, af_df):
     if not af_id_col:
         raise KeyError('AF 缺少欄位：身分證字號')
 
+    roster_category_col = next(
+        (col for col in ROSTER_CATEGORY_COLS if col in roster_df.columns), None)
     roster_cols = ['序號', '姓名'] + ([roster_id_col] if roster_id_col else [])
+    if roster_category_col:
+        roster_cols.append(roster_category_col)
     roster = roster_df[roster_cols].copy()
+    if roster_category_col and roster_category_col != '人員種類':
+        roster = roster.rename(columns={roster_category_col: '人員種類'})
+    if '人員種類' not in roster.columns:
+        roster['人員種類'] = ''
+    raw_categories = roster['人員種類'].map(
+        lambda value: '' if pd.isna(value) else str(value).strip())
+    roster['人員種類'] = raw_categories.map(paycheck.rollup_category).fillna('')
+    invalid_categories = sorted({
+        raw for raw, normalized in zip(raw_categories, roster['人員種類'])
+        if raw and not normalized
+    })
+    if invalid_categories:
+        raise ValueError(
+            '固定清冊的人員種類僅可填一般人員、職工、約聘雇人員或政務人員；'
+            '請確認：' + '、'.join(invalid_categories)
+        )
     roster['姓名'] = roster['姓名'].map(
         lambda value: '' if pd.isna(value) else str(value).strip()
     )
@@ -800,6 +841,7 @@ def sort_af_by_roster(roster_df, af_df):
         for idx in unmatched:
             row = af_df.loc[idx, af_original_cols].copy()
             row['清冊序號'] = seq
+            row['人員種類'] = roster_row['人員種類']
             sorted_rows.append(row)
             matched_af_rows.add(idx)
 
@@ -810,6 +852,7 @@ def sort_af_by_roster(roster_df, af_df):
             continue
         row = af_row[af_original_cols].copy()
         row['清冊序號'] = extra_seq
+        row['人員種類'] = ''
         sorted_rows.append(row)
         label = _person_label(
             af_row['姓名'],
@@ -964,8 +1007,8 @@ def stats_diag():
 
 @app.route('/download-template')
 def download_template():
-    path = os.path.join(app.root_path, 'static', '固定清冊範例.xlsx')
-    return send_file(path, as_attachment=True, download_name='固定清冊範例.xlsx',
+    out = build_roster_template_xlsx()
+    return send_file(out, as_attachment=True, download_name='固定清冊範例.xlsx',
                      mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 
@@ -973,35 +1016,31 @@ def download_template():
 # 走跟真實上傳完全相同的 /process 流程與 compute_category_audit()，
 # 不另外寫捷徑；固定清冊/AF 內容都是虛構人員、虛構「示範國小」。
 # 涵蓋情境：
-#   seq 1-6：清冊人員類別 roll-up 後跟 AF 薪俸表別判定一致（正常案例，
-#            涵蓋官方五類中的四類：教育警察人員x2／一般人員／職工／
-#            約聘僱人員x2〈聘用人員與約僱各一人，兩者官方合併算同一類〉；
-#            「政務人員」目前沒有對應薪俸表別代碼可以示範，見paycheck.py
-#            OFFICIAL_CATEGORIES/SALARY_TABLE_CATEGORY註解）
+#   seq 1-6：已指定大類人員種類跟 AF 薪俸表別判定一致（正常案例）。
 #   seq 7-8：刻意設計的鉤稽不一致，示範清單真的會抓出問題
-#   seq 9：故意不預先分類，示範「待指定人員類別」下拉選單存檔流程
-#   seq 10：AF 端故意留空身分證字號，示範「無法記憶類別、fallback 用
+#   seq 9：故意不預先分類，示範「待指定人員種類」下拉選單存檔流程
+#   seq 10：AF 端故意留空身分證字號，示範「無法記憶種類、fallback 用
 #           AF 表別判定」這個邊界情況
 # sn1 用 000000000X（school.xlsx 裡沒有任何學校用這個代碼開頭，確認
 # 過不會誤配到真實學校），所以 school_name 會是空字串，前端顯示區塊
 # 另外用純前端文字覆蓋成「示範國小」，不影響後端邏輯本身。
 SAMPLE_PEOPLE = [
     {'seq': 1, 'name': '王小明', 'id': 'Z900000001', 'af_code': 'A00011',
-     'category': '教師', 'dept': '教務處', 'duty_code': 'C1014', 'duty_amt': 4000},
+     'category': '一般人員', 'dept': '教務處', 'duty_code': 'C1014', 'duty_amt': 4000},
     {'seq': 2, 'name': '陳雅婷', 'id': 'Z900000002', 'af_code': 'A00011',
-     'category': '主任', 'dept': '學生事務處', 'duty_code': 'C1009', 'duty_amt': 10010},
+     'category': '一般人員', 'dept': '學生事務處', 'duty_code': 'C1009', 'duty_amt': 10010},
     {'seq': 3, 'name': '林秀琴', 'id': 'Z900000003', 'af_code': 'A0001',
-     'category': '幹事', 'dept': '總務處', 'duty_code': 'C1001', 'duty_amt': 5930},
+     'category': '一般人員', 'dept': '總務處', 'duty_code': 'C1001', 'duty_amt': 5930},
     {'seq': 4, 'name': '張家豪', 'id': 'Z900000004', 'af_code': 'A0003',
-     'category': '工友', 'dept': '總務處', 'duty_code': '', 'duty_amt': 0},
+     'category': '職工', 'dept': '總務處', 'duty_code': '', 'duty_amt': 0},
     {'seq': 5, 'name': '陳志豪', 'id': 'Z900000005', 'af_code': 'A0004',
-     'category': '聘用人員', 'dept': '圖書館', 'duty_code': '', 'duty_amt': 0},
+     'category': '約聘雇人員', 'dept': '圖書館', 'duty_code': '', 'duty_amt': 0},
     {'seq': 6, 'name': '黃美玲', 'id': 'Z900000006', 'af_code': 'A0005',
-     'category': '約僱', 'dept': '輔導室', 'duty_code': '', 'duty_amt': 0},
+     'category': '約聘雇人員', 'dept': '輔導室', 'duty_code': '', 'duty_amt': 0},
     {'seq': 7, 'name': '吳建志', 'id': 'Z900000007', 'af_code': 'A0003',
-     'category': '教師', 'dept': '總務處', 'duty_code': '', 'duty_amt': 0},
+     'category': '一般人員', 'dept': '總務處', 'duty_code': '', 'duty_amt': 0},
     {'seq': 8, 'name': '劉俊宏', 'id': 'Z900000008', 'af_code': 'A00011',
-     'category': '駕駛', 'dept': '總務處', 'duty_code': 'C1014', 'duty_amt': 4000},
+     'category': '職工', 'dept': '總務處', 'duty_code': 'C1014', 'duty_amt': 4000},
     {'seq': 9, 'name': '蔡淑芬', 'id': 'Z900000009', 'af_code': 'A0001',
      'category': None, 'dept': '人事室', 'duty_code': '', 'duty_amt': 0},
     {'seq': 10, 'name': '李文彬', 'id': '', 'af_code': 'A0003',
@@ -1024,9 +1063,47 @@ def build_sample_roster_xlsx():
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = 'input'
-    ws.append(['序號', '姓名', '身分證字號'])
+    ws.append(['序號', '姓名', '身分證字號', '人員種類'])
     for p in SAMPLE_PEOPLE:
-        ws.append([p['seq'], p['name'], p['id']])
+        ws.append([p['seq'], p['name'], p['id'], p['category'] or ''])
+    out = io.BytesIO()
+    wb.save(out)
+    out.seek(0)
+    return out
+
+
+def build_roster_template_xlsx():
+    """在既有固定清冊範例加入可選填的人員種類欄與四個大類下拉選單。"""
+    path = os.path.join(app.root_path, 'static', '固定清冊範例.xlsx')
+    wb = openpyxl.load_workbook(path)
+    ws = wb['input']
+    ws['D1'] = '人員種類'
+    ws['D1']._style = copy(ws['C1']._style)
+    ws.column_dimensions['D'].width = 18
+    examples = ['一般人員', '職工', '約聘雇人員']
+    for row, category in enumerate(examples, 2):
+        ws.cell(row, 4, category)
+        ws.cell(row, 4)._style = copy(ws.cell(row, 3)._style)
+
+    validation = openpyxl.worksheet.datavalidation.DataValidation(
+        type='list',
+        formula1='"一般人員,職工,約聘雇人員,政務人員"',
+        allow_blank=True,
+    )
+    validation.error = '請選擇一般人員、職工、約聘雇人員或政務人員'
+    validation.errorTitle = '人員種類不正確'
+    validation.prompt = '可留白；若 AF 表別不易判斷，請直接選擇人員種類。'
+    validation.promptTitle = '人員種類（選填）'
+    validation.showErrorMessage = True
+    validation.showInputMessage = True
+    ws.add_data_validation(validation)
+    validation.add('D2:D500')
+
+    guide = wb['說明']
+    guide['A12'] = ('5. 人員種類：選填，可選一般人員、職工、約聘雇人員或政務人員；'
+                    '有填時優先採用，空白時由系統記憶或 AF 表別判定。')
+    guide['A12']._style = copy(guide['A11']._style)
+
     out = io.BytesIO()
     wb.save(out)
     out.seek(0)
@@ -1136,6 +1213,7 @@ def process():
         # 人員類別鉤稽：用完整的 result_df（含身分證字號、薪俸表別）在伺服器端算，
         # 傳回瀏覽器的清單一律只帶 index，不帶身分證字號。
         full_records = result_df.fillna('').to_dict(orient='records')
+        remember_roster_categories(full_records, result_df.columns.tolist())
         category = compute_category_audit(full_records, result_df.columns.tolist())
 
         return jsonify({
@@ -1166,8 +1244,8 @@ def process():
 @app.route('/categories/save', methods=['POST'])
 def categories_save():
     """
-    儲存 Leo 在網頁上為某幾筆人員指定的人員類別。
-    前端只會送 index（本次排序結果中的列位置）+ 細分類，
+    儲存使用者在網頁上為某幾筆人員指定的人員種類。
+    前端只會送 index（本次排序結果中的列位置）+ 大類人員種類，
     這裡才依 index 從伺服器暫存的完整結果查回身分證字號，
     寫進 person_categories.json，並回傳重新計算後的鉤稽結果。
     """
@@ -1184,7 +1262,7 @@ def categories_save():
     columns = r['columns']
     id_col = next((c for c in PERSON_ID_COLS if c in columns), None)
     if not id_col:
-        return jsonify({'error': '這份資料沒有身分證字號欄位，無法指定人員類別'}), 400
+        return jsonify({'error': '這份資料沒有身分證字號欄位，無法記憶人員種類'}), 400
 
     updates = {}
     skipped = []
@@ -1205,7 +1283,7 @@ def categories_save():
     resp = {'ok': True, 'saved': len(updates), 'category': category}
     if skipped:
         resp['skipped'] = skipped
-        resp['warning'] = '以下人員缺少身分證字號，無法儲存人員類別：' + '、'.join(skipped)
+        resp['warning'] = '以下人員缺少身分證字號，無法儲存人員種類：' + '、'.join(skipped)
     return jsonify(resp)
 
 
@@ -1234,37 +1312,11 @@ CROSS_CHECK_HEADERS_ROW3 = [
     '薪俸總額', '專業加給總額', '職務加給總額', '地域加給總額', None, None, None, None,
 ]
 
-# 原始官方範本 1dc672fc-_______.xlsx 的 A6:S15（合併儲存格）填寫說明，
-# 逐字保留、原樣照抄，Leo 要求這份說明文字必須一起附在產出的表格上，
-# 不能因為套版/自動填值就被清掉。
-CROSS_CHECK_NOTES = (
-    '說明 :\n'
-    '1. 機關單位 : 請填寫機關全銜。\n'
-    '2. 待遇資料校對清冊:\n'
-    '   (1)各類人員類別請按不同薪俸表作為區分並填寫人數。(一般人員、教育警察人員、政務人員、職工、約聘僱人員)\n'
-    '   (2)薪俸、專業加給、職務加給(公務人員主管職務加給表、簡任非主管人員比照主管職務核給職務加給表、'
-    '警勤加給、危險加給…等)及地域加給等所有有申請之表別，均請填寫代碼及人數(請至AF系統機關資料設定＞'
-    '機關適用表別設定下載機關適用表別清單，僅需填寫A、B、C、D類表別即可，表別清單請一併提供予校對機關)，'
-    '如有表別未有支領者亦請列，人數即填0人，並於後括號填列未支領原因。\n'
-    '   (3) 薪俸總額 : 待遇資料校對清冊中EXCEL表「薪俸」項目的總額。\n'
-    '   (4) 專業加給總額 : 待遇資料校對清冊中EXCEL表「專業加给」項目的總額。\n'
-    '   (5) 職務加给總額 : 待遇資料校對清冊中EXCEL表「職務加给」項目的總額。\n'
-    '   (6) 地域加給總額 : 待遇資料校對清冊中EXCEL表「地域加给」項目的總額，無則免填。\n'
-    '3. 薪資清冊:\n'
-    '   (1) 薪俸總額 : 薪資清冊有一頁總表列出所有人員薪俸總額或是有分別合計各類人員薪俸總額再加總即可，'
-    '若皆無請自行加總。\n'
-    '   (2) 專業加給總額 :薪資清冊有一頁總表有列出所有人員專業加给總額或是有分別合計各類人員專業加給總額'
-    '再加總即可，若皆無請自行加總。\n'
-    '   (3) 職務加给總額 : 薪資清冊有一頁總表列出所有人員職務加给總額或是有合計職務加給總額，'
-    '若皆無請自行加總。\n'
-    '   (4) 地域加给總額 : 薪資清冊有一頁總表列出所有人員地域加给總額或是有分別合計各類人員地域加給總額'
-    '再加總即可，若皆無請自行加總，無則免填。 \n'
-    '4. 差異原因 : 校對清冊數字和薪資清冊數字差異的原因。\n'
-    '5. 互核相符(Y/N) : 由校對機關填寫，核對各清冊與所填表的資料是否相符，另校對清冊支領表別、人數及支領'
-    '總額和薪資清冊(含差異原因)是否相符。(Y=YES，表示無誤;N=NO，表示有差異，需於互核未符情形敘明)\n'
-    '6. 互核未符情形：由校對機關填寫，敘明核對錯誤之情形。\n'
-    '7. 備註 : 可書寫特別事項。'
-)
+CROSS_CHECK_TEMPLATE_PATH = os.path.join(
+    app.root_path, 'static', '薪資互核結果表範本.xlsx.b64')
+CROSS_CHECK_TEMPLATE_CATEGORY_TEXT = (
+    '(一般人員、教育警察人員、政務人員、職工、約聘僱人員)')
+CROSS_CHECK_CURRENT_CATEGORY_TEXT = '(一般人員、職工、約聘雇人員、政務人員)'
 
 
 def _tally_codes(series, sep='：', joiner='\n'):
@@ -1279,7 +1331,7 @@ def _tally_codes(series, sep='：', joiner='\n'):
 def _category_summary_text(summary, official_categories):
     """把 compute_category_audit() 算出的 summary 轉成範本 C 欄那種
     「一般人員30人、職工5人、約僱人員4人」文字，只列有人數的類別，
-    依官方五類固定順序（未能判定放最後）。"""
+    依大類固定順序（未能判定放最後）。"""
     order = list(official_categories) + ['未能判定']
     parts = [f'{cat}{summary[cat]}人' for cat in order if summary.get(cat)]
     return '、'.join(parts)
@@ -1299,71 +1351,34 @@ def _col_sum(records, col):
 
 
 def build_cross_check_excel(row_values):
-    """依 Leo 提供的官方範本結構（A1:S1標題、2-3列合併表頭、資料列）
-    產生互核結果表。row_values 是長度19、依 A~S 順序排列的資料列。"""
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = '互核結果表'
+    """直接套用使用者確認的正式範本，僅填入第 4 列並清空第 5 列範例。
 
-    hdr_fill = PatternFill('solid', start_color='1a3a5c')
-    hdr_font = Font(bold=True, color='FFFFFF', name='Microsoft JhengHei', size=10)
-    title_font = Font(bold=True, name='Microsoft JhengHei', size=13)
-    center_wrap = Alignment(horizontal='center', vertical='center', wrap_text=True)
-    left_wrap = Alignment(horizontal='left', vertical='center', wrap_text=True)
-    thin = Side(style='thin', color='888888')
-    border = Border(left=thin, right=thin, top=thin, bottom=thin)
-    data_font = Font(name='Microsoft JhengHei', size=10)
+    這能完整保留原檔的欄寬、列高、合併儲存格、字型、框線與列印設定，
+    不再用程式重新畫一張外觀相似但格式不同的工作表。
+    """
+    if len(row_values) != 19:
+        raise ValueError('互核結果表資料欄位必須正好為 19 欄')
+    with open(CROSS_CHECK_TEMPLATE_PATH, encoding='ascii') as f:
+        template_bytes = base64.b64decode(''.join(f.read().split()), validate=True)
+    wb = openpyxl.load_workbook(io.BytesIO(template_bytes))
+    ws = wb['互核結果表範本']
 
-    last_col = 19  # A..S
-    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=last_col)
-    title_cell = ws.cell(row=1, column=1, value='薪資互核結果表')
-    title_cell.font = title_font
-    title_cell.alignment = Alignment(horizontal='center', vertical='center')
-    ws.row_dimensions[1].height = 24
-
-    for ci, val in enumerate(CROSS_CHECK_HEADERS_ROW2, 1):
-        if val is not None:
-            cell = ws.cell(row=2, column=ci, value=val)
-            cell.fill = hdr_fill
-            cell.font = hdr_font
-            cell.alignment = center_wrap
-            cell.border = border
-    for ci, val in enumerate(CROSS_CHECK_HEADERS_ROW3, 1):
-        if val is not None:
-            cell = ws.cell(row=3, column=ci, value=val)
-            cell.fill = hdr_fill
-            cell.font = hdr_font
-            cell.alignment = center_wrap
-            cell.border = border
-    # 套用範本原有的合併儲存格結構
-    for rng in ('C2:K2', 'L2:O2', 'B2:B3', 'A2:A3', 'P2:P3', 'Q2:Q3', 'R2:R3', 'S2:S3'):
-        ws.merge_cells(rng)
-    for ci in range(1, last_col + 1):
-        c = ws.cell(row=2, column=ci)
-        if c.border.left.style is None:
-            c.border = border
-
+    # 範本第 4、5 列原為兩筆示範資料；正式下載只填本次機關的一筆資料，
+    # 第二列保留空白樣式，避免範例文字或金額混進正式報表。
+    for ri in (4, 5):
+        for ci in range(1, 20):
+            ws.cell(row=ri, column=ci).value = None
     for ci, val in enumerate(row_values, 1):
-        cell = ws.cell(row=4, column=ci, value=val)
-        cell.font = data_font
-        cell.border = border
-        cell.alignment = left_wrap if ci in (3, 4, 6, 8, 10, 16, 17, 19) else center_wrap
+        if isinstance(val, str) and val.startswith(('=', '+', '-', '@')):
+            val = "'" + val
+        ws.cell(row=4, column=ci, value=val)
 
-    # 官方範本 A6:S15 的填寫說明文字，逐字原樣附在資料列下方（Leo 要求
-    # 不能因為套版被清掉），合併成一大格、靠左對齊、自動換行。
-    notes_row = 5
-    ws.merge_cells(start_row=notes_row, start_column=1, end_row=notes_row, end_column=last_col)
-    notes_cell = ws.cell(row=notes_row, column=1, value=CROSS_CHECK_NOTES)
-    notes_cell.font = Font(name='Microsoft JhengHei', size=9)
-    notes_cell.alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
-    notes_cell.border = border
-    ws.row_dimensions[notes_row].height = 340
-
-    widths = {1: 6, 2: 14, 3: 22, 4: 18, 5: 12, 6: 18, 7: 12, 8: 18, 9: 12,
-              10: 14, 11: 12, 12: 12, 13: 12, 14: 12, 15: 12, 16: 24, 17: 12, 18: 20, 19: 16}
-    for ci, w in widths.items():
-        ws.column_dimensions[openpyxl.utils.get_column_letter(ci)].width = w
-    ws.row_dimensions[4].height = 60
+    # 版型照原檔保留；說明中的種類依使用者最新確認改為大分類。
+    if isinstance(ws['A6'].value, str):
+        ws['A6'] = ws['A6'].value.replace(
+            CROSS_CHECK_TEMPLATE_CATEGORY_TEXT,
+            CROSS_CHECK_CURRENT_CATEGORY_TEXT,
+        )
 
     out = io.BytesIO()
     wb.save(out)
@@ -1388,6 +1403,9 @@ def cross_check():
     pdf_f = request.files.get('salary_pdf')
     has_pdf = bool(pdf_f and pdf_f.filename)
     pdf_bytes = pdf_f.read() if has_pdf else b''
+    difference_reason = (request.form.get('difference_reason') or '').strip()
+    if len(difference_reason) > 1000:
+        return jsonify({'error': '差異原因請勿超過 1000 個字'}), 400
 
     try:
         roster_df = read_sheet(roster_bytes, roster_f.filename, 'input', fallback_to_first=True)
@@ -1399,6 +1417,7 @@ def cross_check():
 
         records = result_df.fillna('').to_dict(orient='records')
         columns = result_df.columns.tolist()
+        remember_roster_categories(records, columns)
         category = compute_category_audit(records, columns)
 
         category_text = _category_summary_text(category['summary'], paycheck.OFFICIAL_CATEGORIES)
@@ -1459,15 +1478,20 @@ def cross_check():
             pdf_salary = pdf_prof = pdf_duty = pdf_region = ''
             q_value = ''
 
+    # 使用者主動填寫差異原因就代表本次確有特殊差異，正式表的互核相符
+    # 應標示 N；一般情況保持空白輸入，不影響原本的自動判斷。
+    if difference_reason:
+        q_value = 'N'
+
     row_values = [
         1, school_name,
         category_text, salary_codes, salary_total, prof_codes, prof_total,
         duty_codes, duty_total, region_codes, region_total,
         pdf_salary, pdf_prof, pdf_duty, pdf_region,
-        '', q_value, '', '',
+        difference_reason, q_value, '', '',
     ]
     out = build_cross_check_excel(row_values)
-    filename = f'互核結果表_{school_name or "未知學校"}_{yearmonth or ""}.xlsx'
+    filename = f'薪資互核結果表_{school_name or "未知學校"}_{yearmonth or ""}.xlsx'
     bump_counter('sorts')
     resp = send_file(out, as_attachment=True, download_name=filename,
                      mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
@@ -2120,16 +2144,16 @@ def _build_audit_print_html(school_name, sn2, yearmonth, auto_print=False, inner
 
 @app.route('/download-category-audit')
 def download_category_audit():
-    """下載人員類別鉤稽結果（Excel）：逐人列出清冊人員類別與 AF 表別不一致的名單。"""
+    """下載人員種類不一致明細；此檔是診斷清單，不是正式薪資互核結果表。"""
     r = get_current_result()
     if not r:
         return '尚無資料可下載，請重新處理一次', 400
     records = json.loads(r['data'])
     category = compute_category_audit(records, r['columns'])
-    cols = ['姓名', '人員類別', '人員類別官方分類', 'AF表別', 'AF判定分類', '原因']
+    cols = ['姓名', '人員類別', 'AF表別', 'AF判定分類', '原因']
     out = build_excel(category['mismatches'], cols)
     school_name = r.get('school_name', '')
-    filename = f'人員類別鉤稽_{school_name or "未知學校"}.xlsx'
+    filename = f'人員種類不一致明細_{school_name or "未知學校"}.xlsx'
     return send_file(out, as_attachment=True, download_name=filename,
                      mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
