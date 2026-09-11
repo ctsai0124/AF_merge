@@ -91,6 +91,71 @@ class CrossCheckTemplateTests(unittest.TestCase):
         )
         self.assertIn('D2:D500', str(validation.sqref))
 
+    def test_unknown_pdf_format_warning_surfaces_through_cross_check(self):
+        """Leo問「如果來一份完全陌生格式的清冊」之後補的合理性檢查：
+        PDF項目名稱文字跟系統認得的版本不同、金額欄位全部解析成0時，
+        /cross-check 必須把這個異常明確地放進 warning 顯示給使用者，
+        不能靜默產出一份看起來正常、其實金額全錯的報表。"""
+        roster = workbook_bytes('input', [
+            {'序號': 1, '姓名': '王小明', '身分證字號': 'C123456789', '人員種類': '一般人員'},
+            {'序號': 2, '姓名': '林小美', '身分證字號': 'D223456789', '人員種類': '一般人員'},
+        ])
+        af = workbook_bytes('AF', [
+            {'姓名': '王小明', '身分證字號': 'C123456789',
+             '薪俸表別': 'A0001', '支領數額': 30000,
+             '專業加給表別': 'B10021', '支領數額.1': 5000,
+             '職務加給表別': '', '支領數額.2': 0,
+             '地域加給表別': '', '支領數額.3': 0},
+            {'姓名': '林小美', '身分證字號': 'D223456789',
+             '薪俸表別': 'A0001', '支領數額': 32000,
+             '專業加給表別': 'B10021', '支領數額.1': 5000,
+             '職務加給表別': '', '支領數額.2': 0,
+             '地域加給表別': '', '支領數額.3': 0},
+        ])
+        person_a_header = '\n'.join(['1', 'C123456789', '王小明', '教師', '300'])
+        person_b_header = '\n'.join(['2', 'D223456789', '林小美', '教師', '310'])
+        corner = '\n'.join(['序號', '身分證字號', '姓名', '職稱', '支薪俸級'])
+        rows = [
+            [corner, person_a_header, person_b_header],
+            ['基本薪給', '30000', '32000'],
+            ['應發合計', '35000', '37000'],
+        ]
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import A4
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+        try:
+            pdfmetrics.registerFont(UnicodeCIDFont('STSong-Light'))
+        except Exception:
+            pass
+        pdf_buf = io.BytesIO()
+        doc = SimpleDocTemplate(pdf_buf, pagesize=A4)
+        tbl = Table(rows)
+        tbl.setStyle(TableStyle([
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
+            ('FONTNAME', (0, 0), (-1, -1), 'STSong-Light'),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
+        ]))
+        doc.build([tbl])
+        pdf_bytes = pdf_buf.getvalue()
+
+        with tempfile.TemporaryDirectory() as data_dir, patch.dict(
+            os.environ, {'DATA_DIR': data_dir}
+        ):
+            client = app.test_client()
+            response = client.post('/cross-check', data={
+                'roster': (io.BytesIO(roster), '固定清冊.xlsx'),
+                'af': (io.BytesIO(af), 'AF_000000000X_11509.xlsx'),
+                'salary_pdf': (io.BytesIO(pdf_bytes), 'salary.pdf'),
+            })
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload['success'])
+        self.assertIn('項目名稱', payload['warning'])
+        self.assertIn('0', payload['warning'])
+
+
     def test_difference_reason_is_written_to_formal_report(self):
         roster = workbook_bytes('input', [{
             '序號': 1, '姓名': '王小明', '身分證字號': 'A123456789',

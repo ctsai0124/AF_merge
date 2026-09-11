@@ -72,3 +72,131 @@ class InferredGrossTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def _vtable(header_labels, people_cols, data_rows):
+    """輔助函式：組出 pdfplumber.extract_tables() 風格的表格結構
+    （list of rows, each row a list of cell string）。
+    header_labels: 表頭第一欄印的標籤（用 \\n 分隔的多行文字）。
+    people_cols: 每個人的表頭欄位內容，list of 字串（\\n 分隔多行）。
+    data_rows: [(row_label, [每人數值...]), ...]。
+    """
+    header = [header_labels] + list(people_cols)
+    rows = [header]
+    for label, values in data_rows:
+        rows.append([label] + list(values))
+    return rows
+
+
+class ParseVerticalRealWorldFormatTests(unittest.TestCase):
+    """涵蓋 2026-09 修正的兩個真實 bug：五行表頭（含身分證字號）的
+    欄位錯位、以及多子表各自從 1 重新編號時的跨表撞號覆蓋問題。
+    這兩個 bug 先前只用 /tmp 底下的一次性腳本驗證過，沒有留在正式
+    測試套件裡，這裡補上永久回歸測試。"""
+
+    def test_five_line_header_extracts_id_into_correct_field(self):
+        tbl = _vtable(
+            '序號\n身分證字號\n姓名\n職稱\n支薪俸級',
+            ['1\nA123456789\n王小明\n教師\n300',
+             '2\nB223456789\n林小美\n教師\n310'],
+            [('薪俸', ['30000', '32000']),
+             ('應發數合計', ['35000', '37000'])],
+        )
+        people = paycheck._parse_vertical([tbl])
+        self.assertEqual(len(people), 2)
+        self.assertEqual(people[0]['身分證'], 'A123456789')
+        self.assertEqual(people[0]['姓名'], '王小明')
+        self.assertEqual(people[0]['職稱'], '教師')
+        self.assertEqual(people[1]['身分證'], 'B223456789')
+        self.assertEqual(people[1]['姓名'], '林小美')
+
+    def test_three_line_header_still_works_without_id(self):
+        tbl = _vtable(
+            '序號\n姓名\n職稱',
+            ['1\n王小明\n教師', '2\n林小美\n教師'],
+            [('薪俸', ['30000', '32000'])],
+        )
+        people = paycheck._parse_vertical([tbl])
+        self.assertEqual(len(people), 2)
+        self.assertEqual(people[0]['身分證'], '')
+        self.assertEqual(people[0]['姓名'], '王小明')
+
+    def test_cross_table_numbering_does_not_collide(self):
+        """兩張子表都各自從序號1開始編號，修正前會互相覆蓋、掉資料。"""
+        tbl1 = _vtable(
+            '序號\n身分證字號\n姓名\n職稱\n支薪俸級',
+            ['1\nA123456789\n王小明\n教師\n300'],
+            [('薪俸', ['30000'])],
+        )
+        tbl2 = _vtable(
+            '序號\n身分證字號\n姓名\n職稱\n支薪俸級',
+            ['1\nC345678901\n陳大同\n幹事\n200'],
+            [('薪俸', ['28000'])],
+        )
+        people = paycheck._parse_vertical([tbl1, tbl2])
+        self.assertEqual(len(people), 2)
+        names = {p['姓名'] for p in people}
+        self.assertEqual(names, {'王小明', '陳大同'})
+        ids = {p['身分證'] for p in people}
+        self.assertEqual(ids, {'A123456789', 'C345678901'})
+
+
+class ParsePdfSanityCheckTests(unittest.TestCase):
+    """Leo 問「換一份完全陌生格式的清冊會怎樣」之後補的合理性檢查：
+    偵測「姓名/職稱欄位長得像身分證字號」（欄位錯位跡象）跟「金額
+    欄位全部是 0」（項目名稱對不到跡象），格式異常時要回傳警告文字，
+    不能靜默產出一份看似正常、其實錯位或抓不到金額的資料。"""
+
+    def test_normal_five_line_pdf_has_no_sanity_warning(self):
+        tbl = _vtable(
+            '序號\n身分證字號\n姓名\n職稱\n支薪俸級',
+            ['1\nC123456789\n王小明\n教師\n300'],
+            [('薪俸', ['30000']), ('應發數合計', ['35000'])],
+        )
+        people = paycheck._parse_vertical([tbl])
+        self.assertEqual(paycheck._sanity_check(people), [])
+
+    def test_id_shaped_name_field_triggers_warning(self):
+        """模擬陌生表頭順序（序號/姓名/身分證字號，姓名剛好還留在對的
+        位置，但身分證字號被錯塞進職稱欄）——職稱長得像身分證字號。"""
+        tbl = _vtable(
+            '序號\n姓名\n身分證字號',
+            ['1\n王小明\nA123456789'],
+            [('薪俸', ['30000'])],
+        )
+        people = paycheck._parse_vertical([tbl])
+        self.assertEqual(people[0]['職稱'], 'A123456789')
+        warnings = paycheck._sanity_check(people)
+        self.assertTrue(warnings)
+        self.assertIn('職稱', warnings[0])
+        self.assertIn('身分證字號', warnings[0])
+
+    def test_unknown_row_labels_zero_out_amounts_and_trigger_warning(self):
+        """模擬項目名稱文字跟 FIELD_ALIAS 對不到的陌生格式，金額欄位
+        會全部變 0，必須被合理性檢查抓出來，不能悄悄當成「這個人薪水
+        是0元」就算了。"""
+        tbl = _vtable(
+            '序號\n身分證字號\n姓名\n職稱\n支薪俸級',
+            ['1\nC123456789\n王小明\n教師\n300'],
+            [('基本薪給', ['30000']), ('應發合計', ['35000'])],
+        )
+        people = paycheck._parse_vertical([tbl])
+        self.assertEqual(people[0]['薪俸'], 0)
+        warnings = paycheck._sanity_check(people)
+        self.assertTrue(warnings)
+        self.assertIn('0', warnings[0])
+
+    def test_empty_people_list_has_no_warning(self):
+        self.assertEqual(paycheck._sanity_check([]), [])
+
+
+class LooksLikeIdTests(unittest.TestCase):
+    def test_valid_shape(self):
+        self.assertTrue(paycheck._looks_like_id('A123456789'))
+        self.assertTrue(paycheck._looks_like_id('a123456789'))
+
+    def test_invalid_shape(self):
+        self.assertFalse(paycheck._looks_like_id('王小明'))
+        self.assertFalse(paycheck._looks_like_id('A12345678'))  # 少一碼
+        self.assertFalse(paycheck._looks_like_id(''))
+        self.assertFalse(paycheck._looks_like_id(None))

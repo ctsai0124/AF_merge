@@ -1494,6 +1494,7 @@ def cross_check():
     # 整個擋住。責任在使用者身上，他們送出前本來就要自己核對/修正好數字。
     pdf_warning = None
     pdf_people = []
+    pdf_sanity_warnings = []
     if not has_pdf:
         pdf_salary, pdf_prof, pdf_duty, pdf_region = salary_total, prof_total, duty_total, region_total
         q_value = 'Y'
@@ -1502,7 +1503,7 @@ def cross_check():
             pdf_warning = '薪資清冊 PDF 是掃描圖檔，系統無法自動辨識文字，右半邊金額請自行填入後再送出。'
         else:
             try:
-                pdf_people, _layout = paycheck.parse_pdf(pdf_bytes)
+                pdf_people, _layout, pdf_sanity_warnings = paycheck.parse_pdf(pdf_bytes)
             except Exception:
                 app.logger.exception('互核結果表的薪資清冊解析失敗')
                 pdf_warning = '解析薪資清冊 PDF 時發生錯誤，右半邊金額請自行填入後再送出。'
@@ -1567,6 +1568,13 @@ def cross_check():
             # 辨識不出人員資料：右半邊留空、Q 留空，不猜測、不硬填 0。
             pdf_salary = pdf_prof = pdf_duty = pdf_region = ''
             q_value = ''
+
+    # 格式合理性檢查發現的異常（例如姓名欄位長得像身分證字號、金額
+    # 欄位全部是 0），代表這份 PDF 的格式可能跟系統認得的版本不同、
+    # 解析結果不可信，不管前面判斷得出什麼結果都要一併提示使用者。
+    if pdf_sanity_warnings:
+        note = '；'.join(pdf_sanity_warnings)
+        pdf_warning = (pdf_warning + '；' + note) if pdf_warning else note
 
     # 使用者主動填寫差異原因就代表本次確有特殊差異，正式表的互核相符
     # 應標示 N；一般情況保持空白輸入，不影響原本的自動判斷。
@@ -1669,7 +1677,7 @@ def compare_pdf():
 
     # ── 有文字層 → 直接解析比對 ──
     try:
-        pdf_people, layout = paycheck.parse_pdf(pdf_bytes)
+        pdf_people, layout, pdf_sanity_warnings = paycheck.parse_pdf(pdf_bytes)
         if not pdf_people:
             return jsonify({
                 'error': '偵測不到表格結構，無法比對',
@@ -1705,6 +1713,8 @@ def compare_pdf():
         if bad_arith:
             af_warns.append('薪資清冊本身加總不符（各項相加 ≠ 應發金額）：'
                             + '、'.join(bad_arith) + '，請先確認清冊是否正確')
+        if pdf_sanity_warnings:
+            af_warns.extend(pdf_sanity_warnings)
 
         out = paycheck.compare(pdf_people, af_records)
         out['success'] = True

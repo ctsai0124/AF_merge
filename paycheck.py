@@ -167,7 +167,19 @@ def has_text_layer(file_bytes):
 
 
 def parse_pdf(file_bytes):
-    """自動判斷直式／橫式版面並解析，回傳人員清單"""
+    """自動判斷直式／橫式版面並解析，回傳 (人員清單, 版面, 警告清單)。
+
+    警告清單是「合理性檢查」的結果：目前的版面判斷（_parse_vertical /
+    _parse_horizontal）都是靠內容特徵猜格式，遇到跟系統認得的版本差
+    異太大的全新排版，並不保證會「明確報錯」——有可能還是硬解出一份
+    看似正常、其實欄位錯位或金額欄位對不到的資料（例如姓名欄位其實
+    印的是別的格式、或項目名稱文字跟系統認得的不同導致金額全抓成
+    0）。_sanity_check() 就是用來抓這類「解析結果不合理、不該直接
+    採信」的跡象，回傳文字清單讓呼叫端明確提示使用者人工核對，而不
+    是靜默送出一份看起來正常但其實是錯的表。這不是萬無一失的偵測，
+    只能抓出「明顯不合理」的情況，仍然不能保證所有陌生格式都會被
+    抓到。
+    """
     import pdfplumber
     tmp = tempfile.NamedTemporaryFile(suffix='.pdf', delete=False)
     tmp.write(file_bytes); tmp.close()
@@ -177,13 +189,53 @@ def parse_pdf(file_bytes):
             for page in pdf.pages:
                 tables.extend([t for t in page.extract_tables() if t and t[0]])
             if not tables:
-                return [], 'unknown'
+                return [], 'unknown', []
             head0 = (tables[0][0][0] or '')
             if '序號' in head0 and '姓名' in head0:
-                return _parse_vertical(tables), 'vertical'
-            return _parse_horizontal(tables), 'horizontal'
+                people, layout = _parse_vertical(tables), 'vertical'
+            else:
+                people, layout = _parse_horizontal(tables), 'horizontal'
+            return people, layout, _sanity_check(people)
     finally:
         os.unlink(tmp.name)
+
+
+def _sanity_check(people):
+    """粗略合理性檢查，抓「解析結果明顯不合理、格式可能跟系統認得的
+    版本不同」的跡象：
+    1. 「姓名」欄位內容長得像身分證字號 —— 通常代表表頭格式跟現有
+       假設不同，欄位被錯位解析（例如身分證字號被錯塞進姓名欄）。
+    2. 解析出的每一個人，薪俸／專業加給／主管加給／導師特教／應發
+       金額／實發金額全部都是 0 —— 通常代表這份 PDF 的項目名稱文字
+       跟 FIELD_ALIAS 認得的版本不同，金額欄位完全沒對應到。
+    只要偵測到其中之一，代表這份 PDF 的解析結果不該被直接採信，
+    呼叫端應該把回傳的警告文字顯示給使用者、提示人工核對，而不是
+    直接拿去計算/填表。
+    """
+    warnings = []
+    if not people:
+        return warnings
+
+    misaligned_name = [p for p in people if _looks_like_id(p.get('姓名', ''))]
+    misaligned_title = [p for p in people if _looks_like_id(p.get('職稱', ''))]
+    if misaligned_name or misaligned_title:
+        field = '姓名' if misaligned_name else '職稱'
+        count = len(misaligned_name) if misaligned_name else len(misaligned_title)
+        warnings.append(
+            f'偵測到 {count} 筆資料的「{field}」欄位內容長得像身分證字號，'
+            '可能是這份 PDF 的表頭格式跟系統認得的版本不同、欄位被錯位解析，'
+            '此份 PDF 的解析結果請人工核對，不建議直接採信。'
+        )
+
+    core_fields = FIELDS + ['應發金額', '實發金額']
+    all_zero = all(not any(p.get(f) for f in core_fields) for p in people)
+    if all_zero:
+        warnings.append(
+            f'解析出的 {len(people)} 筆人員資料，薪俸／應發金額／實發金額等欄位全部都是 0，'
+            '可能是這份 PDF 的項目名稱文字跟系統認得的版本不同，導致金額欄位沒有對應到，'
+            '此份 PDF 的解析結果請人工核對，不建議直接採信。'
+        )
+    return warnings
 
 
 def _finalize(p):
