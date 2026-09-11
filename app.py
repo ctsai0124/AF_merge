@@ -1511,13 +1511,58 @@ def cross_check():
                 pdf_warning = '薪資清冊 PDF 偵測不到表格結構，無法自動算出金額，右半邊金額請自行填入後再送出。'
 
         if pdf_people:
-            pdf_salary = sum(p.get('薪俸', 0) for p in pdf_people)
-            pdf_prof = sum(p.get('專業加給', 0) for p in pdf_people)
-            pdf_duty = sum(p.get('主管加給', 0) + p.get('導師特教', 0) for p in pdf_people)
-            pdf_region = sum(p.get('地域加給', 0) for p in pdf_people)
-            match = (salary_total == pdf_salary and prof_total == pdf_prof
-                     and duty_total == pdf_duty and region_total == pdf_region)
-            q_value = 'Y' if match else 'N'
+            # 身分優先於金額：Leo 明確要求的設計是「PDF 上印的數字就是
+            # 數字，系統不要另外去驗算它本身對不對；真正該檢查的是這筆
+            # PDF 資料跟固定清冊＋AF 是不是同一群人」。用 paycheck.match()
+            # （身分證字號優先、姓名其次）比對兩邊身分，配對得上的人才
+            # 採用他 PDF 上的數字去加總；配不上的人（PDF 有但清冊+AF
+            # 沒有、或清冊+AF 有但 PDF 沒抓到）明確列出來警告，不猜測、
+            # 不悄悄地把落單的人算進或不算進總額而不講。
+            id_col = next((c for c in PERSON_ID_COLS if c in columns), None)
+            af_records_for_match = [
+                {'姓名': str(row.get('姓名', '') or '').strip(),
+                 '身分證': _normalize_person_id(row.get(id_col, '')) if id_col else ''}
+                for row in records
+            ]
+            pairs, pdf_only, af_only, ambiguous = paycheck.match(pdf_people, af_records_for_match)
+            matched_pdf = [p for p, _a, _why in pairs]
+
+            identity_notes = []
+            if af_only:
+                names = '、'.join(a['姓名'] for a in af_only if a.get('姓名'))
+                identity_notes.append(f'固定清冊＋AF 有但 PDF 沒抓到：{names or f"{len(af_only)}人"}')
+            if pdf_only:
+                names = '、'.join(p.get('姓名', '') for p in pdf_only if p.get('姓名'))
+                identity_notes.append(f'PDF 有但對不到固定清冊＋AF：{names or f"{len(pdf_only)}人"}')
+            if ambiguous:
+                identity_notes.append(f'同名同姓待人工確認：{len(ambiguous)}組')
+
+            if not matched_pdf:
+                # 一個人都配不上，沒有任何可信的數字可以填，跟辨識失敗
+                # 一樣處理：留空，不硬填0造成誤導。
+                pdf_salary = pdf_prof = pdf_duty = pdf_region = ''
+                q_value = ''
+                pdf_warning = ('PDF 解析到 ' + str(len(pdf_people))
+                               + ' 筆資料，但沒有一筆能跟固定清冊＋AF 的身分對上'
+                               + '（' + '；'.join(identity_notes) + '），'
+                               + '右半邊金額請自行核對後填入。')
+            else:
+                pdf_salary = sum(p.get('薪俸', 0) for p in matched_pdf)
+                pdf_prof = sum(p.get('專業加給', 0) for p in matched_pdf)
+                pdf_duty = sum(p.get('主管加給', 0) + p.get('導師特教', 0) for p in matched_pdf)
+                pdf_region = sum(p.get('地域加給', 0) for p in matched_pdf)
+                if identity_notes:
+                    # 人數／身分對不起來，金額就不可信——這是 Leo 確認過的
+                    # 判斷邏輯，直接判 N，不是「不確定」的空白。
+                    q_value = 'N'
+                    pdf_warning = ('PDF 解析到 ' + str(len(pdf_people)) + ' 筆、成功配對 '
+                                   + str(len(matched_pdf)) + ' 筆，仍有身分沒對上：'
+                                   + '；'.join(identity_notes)
+                                   + '。右半邊金額僅計入已配對成功者，總額可能不完整，請核對。')
+                else:
+                    match_ok = (salary_total == pdf_salary and prof_total == pdf_prof
+                                and duty_total == pdf_duty and region_total == pdf_region)
+                    q_value = 'Y' if match_ok else 'N'
         else:
             # 辨識不出人員資料：右半邊留空、Q 留空，不猜測、不硬填 0。
             pdf_salary = pdf_prof = pdf_duty = pdf_region = ''

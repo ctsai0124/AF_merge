@@ -193,9 +193,26 @@ def _finalize(p):
     return p
 
 
+def _looks_like_id(s):
+    """粗略判斷是否為身分證字號格式（1個英文字母+9碼數字），
+    只用來判斷表頭那一行印的是身分證字號還是姓名，不做檢查碼驗證。"""
+    return bool(re.fullmatch(r'[A-Za-z][0-9]{9}', (s or '').strip()))
+
+
 def _parse_vertical(tables):
-    """直式：一人一欄，表頭為 序號\\n姓名\\n職稱\\n支薪俸級"""
-    people = {}
+    """直式：一人一欄。真實薪資清冊表頭常見兩種版本：
+    - 舊/簡化版：序號\\n姓名\\n職稱
+    - 完整版（機關實際使用的格式）：序號\\n身分證字號\\n姓名\\n職稱\\n支薪俸級
+    用「第二行是不是長得像身分證字號」來判斷是哪一種，避免固定用位置切，
+    把身分證字號誤當姓名、姓名誤當職稱（曾發生過的真實錯位問題）。
+
+    另外，一份 PDF 常常是多個各自獨立編號的子表銜接而成（例如教師表跟
+    會計/工友/約僱等表都各自從序號1重新編號)。過去用「序號」本身當全域
+    唯一 key 會讓不同子表的序號互相覆蓋，導致整批人員憑空消失、且被覆蓋
+    的紀錄還會被冠上別人的薪資數字。這裡改成每個表格自己獨立處理、直接
+    輸出成清單，不再跨表共用同一個以序號為 key 的字典。
+    """
+    all_people = []
     for tbl in tables:
         head = [c or '' for c in tbl[0]]
         if '序號' not in head[0]:
@@ -205,21 +222,28 @@ def _parse_vertical(tables):
             parts = [x.strip() for x in (cell or '').split('\n') if x.strip()]
             if not parts or not re.fullmatch(r'\d+', parts[0]):
                 continue
-            cols[ci] = {'序號': int(parts[0]),
-                        '姓名': parts[1] if len(parts) > 1 else '',
-                        '職稱': parts[2] if len(parts) > 2 else ''}
-        for ci, info in cols.items():
-            people.setdefault(info['序號'], dict(info))
+            if len(parts) >= 2 and _looks_like_id(parts[1]):
+                cols[ci] = {'序號': int(parts[0]), '身分證': parts[1].upper(),
+                            '姓名': parts[2] if len(parts) > 2 else '',
+                            '職稱': parts[3] if len(parts) > 3 else ''}
+            else:
+                cols[ci] = {'序號': int(parts[0]), '身分證': '',
+                            '姓名': parts[1] if len(parts) > 1 else '',
+                            '職稱': parts[2] if len(parts) > 2 else ''}
+        # 這個表格自己的暫存區，用欄位索引(ci)當 key——同一張表格內
+        # 欄位索引天生不會重複，不同表格各自獨立、不共用字典。
+        table_people = {ci: dict(info) for ci, info in cols.items()}
         for row in tbl[1:]:
             if not row or not row[0]:
                 continue
             key = FIELD_ALIAS.get(row[0].strip())
             if not key:
                 continue
-            for ci, info in cols.items():
+            for ci in table_people:
                 if ci < len(row):
-                    people[info['序號']][key] = _n(row[ci])
-    return [_finalize(people[k]) for k in sorted(people)]
+                    table_people[ci][key] = _n(row[ci])
+        all_people.extend(_finalize(table_people[ci]) for ci in sorted(table_people))
+    return all_people
 
 
 def _parse_horizontal(tables):

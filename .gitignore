@@ -8,3 +8,4 @@ layout_profiles.json
 *.log
 .DS_Store
 *.bak-*
+exclusions.json
