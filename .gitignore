@@ -2,6 +2,8 @@ __pycache__/
 *.py[cod]
 counter.json
 person_categories.json
+title_stats.json
+layout_profiles.json
 .env
 *.log
 .DS_Store

@@ -531,33 +531,26 @@ async function doCrossCheck() {
   msg.className = 'msg';
   try {
     const res = await fetch('/cross-check', { method: 'POST', body: fd });
-    if (!res.ok) {
-      let errMsg = '產製失敗，請確認上傳的檔案格式';
-      try { const j = await res.json(); if (j && j.error) errMsg = j.error; } catch (e) {}
+    let j = null;
+    try { j = await res.json(); } catch (e) {}
+    if (!res.ok || !j || !j.success) {
+      const errMsg = (j && j.error) || '產製失敗，請確認上傳的檔案格式';
       msg.textContent = '❌ ' + errMsg;
       msg.className = 'msg err-msg';
       return;
     }
-    const blob = await res.blob();
-    let filename = '互核結果表.xlsx';
-    const cd = res.headers.get('Content-Disposition') || '';
-    const m = cd.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
-    if (m) { try { filename = decodeURIComponent(m[1]); } catch (e) { filename = m[1]; } }
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = filename;
-    document.body.appendChild(a); a.click(); a.remove();
-    URL.revokeObjectURL(url);
-    const warnB64 = res.headers.get('X-Cross-Check-Warning');
-    if (warnB64) {
-      let warnText = 'PDF 部分欄位無法自動辨識，請下載後自行確認、補填。';
-      try { warnText = decodeURIComponent(escape(atob(warnB64))); } catch (e) {}
-      msg.textContent = '✔ 已下載互核結果表　⚠ ' + warnText;
+    // 跟「①比對資料」「②執行排序」的下載按鈕用同一種機制：用一般的瀏覽
+    // 器導覽（location.href）去下載，而不是用 JS 組 blob + <a download>。
+    // 後者在 Safari／部分行動瀏覽器上不保證會真的觸發存檔，這裡改成
+    // 跟其他下載按鈕完全一致的做法，才能確保各種瀏覽器都會跳出下載。
+    if (j.warning) {
+      msg.textContent = '✔ 已產製，即將開始下載　⚠ ' + j.warning;
       msg.className = 'msg warn-msg';
     } else {
-      msg.textContent = '✔ 已下載互核結果表';
+      msg.textContent = '✔ 已產製，即將開始下載…';
       msg.className = 'msg ok-msg';
     }
+    window.location.href = j.download_url || '/download-cross-check';
   } catch (e) {
     msg.textContent = '❌ 發生錯誤：' + e.message;
     msg.className = 'msg err-msg';

@@ -1312,6 +1312,51 @@ CROSS_CHECK_HEADERS_ROW3 = [
     '薪俸總額', '專業加給總額', '職務加給總額', '地域加給總額', None, None, None, None,
 ]
 
+# 產出的互核結果表暫存區：跟既有 /process → /download-simple 等下載
+# 路由用的 _results 快取是同一種設計。POST /cross-check 只負責運算並把
+# 完成的 xlsx 位元組存進這裡，回傳 JSON（不直接回傳檔案本體）；真正的
+# 檔案下載交給 GET /download-cross-check 做一次單純的瀏覽器導覽（跟
+# 「① 比對資料」「② 執行排序」那幾個下載按鈕完全一樣的機制），這樣才
+# 能在各種瀏覽器（尤其 Safari／行動裝置）都穩定觸發真正的下載動作，
+# 不依賴 JS 動態組出 blob + <a download> 這種在部分瀏覽器不可靠的做法。
+_cross_check_lock = threading.Lock()
+_cross_check_results = {}         # cross_check_id -> {...}
+CROSS_CHECK_RESULT_TTL = 600      # 暫存 10 分鐘，供使用者點下載連結用
+
+
+def _cross_check_gc():
+    now = time.time()
+    for cid in [c for c, v in _cross_check_results.items()
+                if now - v['created'] > CROSS_CHECK_RESULT_TTL]:
+        _cross_check_results.pop(cid, None)
+
+
+def save_cross_check_result(xlsx_bytes, filename, warning):
+    cid = uuid.uuid4().hex
+    with _cross_check_lock:
+        _cross_check_gc()
+        old_cid = session.get('cross_check_id')
+        if old_cid:
+            _cross_check_results.pop(old_cid, None)
+        _cross_check_results[cid] = {
+            'created': time.time(),
+            'bytes': xlsx_bytes,
+            'filename': filename,
+            'warning': warning,
+        }
+    session['cross_check_id'] = cid
+    return cid
+
+
+def get_current_cross_check_result():
+    cid = session.get('cross_check_id')
+    if not cid:
+        return None
+    with _cross_check_lock:
+        _cross_check_gc()
+        return _cross_check_results.get(cid)
+
+
 CROSS_CHECK_TEMPLATE_PATH = os.path.join(
     app.root_path, 'static', '薪資互核結果表範本.xlsx.b64')
 CROSS_CHECK_TEMPLATE_CATEGORY_TEXT = (
@@ -1493,12 +1538,32 @@ def cross_check():
     out = build_cross_check_excel(row_values)
     filename = f'薪資互核結果表_{school_name or "未知學校"}_{yearmonth or ""}.xlsx'
     bump_counter('sorts')
-    resp = send_file(out, as_attachment=True, download_name=filename,
-                     mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    if pdf_warning:
-        # 用 base64 避免中文字出現在 HTTP header 裡導致編碼錯誤；
-        # 前端下載後可解碼顯示提醒，但即使前端不理會，檔案本身仍正常下載。
-        resp.headers['X-Cross-Check-Warning'] = base64.b64encode(pdf_warning.encode('utf-8')).decode('ascii')
+
+    # 這裡刻意不直接 send_file 回傳檔案本體。這個路由要求上傳檔案（POST
+    # multipart），只能用 fetch() 呼叫，而 fetch 回應的二進位內容要靠 JS
+    # 另外組 blob + <a download> 才能觸發存檔——這種寫法在 Safari／部分
+    # 行動瀏覽器上並不可靠（有時完全不會有任何反應、也不會報錯）。改成
+    # 「這支路由只算資料、存起來、回傳 JSON」＋「另外一個 GET 路由做純
+    # 導覽下載」，前端才能用 location.href 導覽到 GET 路由，跟「①比對
+    # 資料」「②執行排序」用的下載機制完全一致，才能保證各種瀏覽器都會
+    # 跳出真正的下載動作。
+    save_cross_check_result(out.getvalue(), filename, pdf_warning)
+    return jsonify({'success': True, 'download_url': '/download-cross-check', 'warning': pdf_warning})
+
+
+@app.route('/download-cross-check')
+def download_cross_check():
+    result = get_current_cross_check_result()
+    if not result:
+        return jsonify({'error': '找不到互核結果表，可能已逾時（10 分鐘），請重新按一次「產製互核結果表」'}), 404
+    resp = send_file(
+        io.BytesIO(result['bytes']), as_attachment=True,
+        download_name=result['filename'],
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+    if result.get('warning'):
+        resp.headers['X-Cross-Check-Warning'] = base64.b64encode(
+            result['warning'].encode('utf-8')).decode('ascii')
     return resp
 
 

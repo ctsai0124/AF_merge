@@ -106,14 +106,24 @@ class CrossCheckTemplateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as data_dir, patch.dict(
             os.environ, {'DATA_DIR': data_dir}
         ):
-            response = app.test_client().post('/cross-check', data={
+            client = app.test_client()
+            response = client.post('/cross-check', data={
                 'roster': (io.BytesIO(roster), '固定清冊.xlsx'),
                 'af': (io.BytesIO(af), 'AF_000000000X_11509.xlsx'),
                 'difference_reason': '考績晉級差額，下月補發',
             })
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertTrue(payload['success'])
+            self.assertEqual(payload['download_url'], '/download-cross-check')
 
-        self.assertEqual(response.status_code, 200)
-        sheet = openpyxl.load_workbook(io.BytesIO(response.data))['互核結果表範本']
+            # /cross-check 只算資料存起來、回傳 JSON；真正的檔案要另外
+            # 對 /download-cross-check 發一次 GET 才拿得到（跟「①比對
+            # 資料」「②執行排序」的下載機制一致，同一個 session 內有效）。
+            download = client.get('/download-cross-check')
+
+        self.assertEqual(download.status_code, 200)
+        sheet = openpyxl.load_workbook(io.BytesIO(download.data))['互核結果表範本']
         self.assertEqual(sheet['P4'].value, '考績晉級差額，下月補發')
         self.assertEqual(sheet['Q4'].value, 'N')
 
