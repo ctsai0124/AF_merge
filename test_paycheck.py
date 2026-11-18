@@ -200,3 +200,41 @@ class LooksLikeIdTests(unittest.TestCase):
         self.assertFalse(paycheck._looks_like_id('A12345678'))  # 少一碼
         self.assertFalse(paycheck._looks_like_id(''))
         self.assertFalse(paycheck._looks_like_id(None))
+
+
+class FromOcrClaimedNameTests(unittest.TestCase):
+    """模糊校正不可把清冊其他人搶到已被本人精確占用的 AF 姓名（虛構資料）。"""
+
+    def ocr(self, name, title, pay):
+        return {'姓名': name, '職稱': title, '身分證': '', '身分證有效': False,
+                '薪俸': pay, '專業加給': 30000, '主管加給': 0, '導師特教': 0,
+                '其他加給': 0, '應發金額': pay + 30000, '應發金額推算': False,
+                '加總相符': True, '最低信心': 1.0}
+
+    def af(self, name, pay):
+        return {'姓名': name, '身分證': 'X', '薪俸': pay, '專業加給': 30000,
+                '主管加給': 0, '導師特教': 0}
+
+    def test_close_name_already_matched_exactly_goes_to_review(self):
+        people = [self.ocr('林甲乙', '教務主任', 50000),
+                  self.ocr('林乙丙', '代理教師', 40000)]
+        good, need = paycheck.from_ocr(people, [self.af('林甲乙', 50000)])
+        self.assertEqual([g['姓名'] for g in good], ['林甲乙'])
+        self.assertEqual(len(need), 1)
+        self.assertEqual(need[0]['原始姓名'], '林乙丙')
+        self.assertEqual(need[0]['建議姓名'], '')
+        out = paycheck.compare(good, [self.af('林甲乙', 50000)])
+        self.assertEqual(out['summary']['一致'], 1)
+
+    def test_unclaimed_close_name_is_still_corrected(self):
+        good, need = paycheck.from_ocr([self.ocr('林甲丁', '教師', 50000)],
+                                       [self.af('林甲乙', 50000)])
+        self.assertEqual([g['姓名'] for g in good], ['林甲乙'])
+        self.assertEqual(need, [])
+
+    def test_two_rows_cannot_both_claim_one_af_name(self):
+        people = [self.ocr('林甲丁', '教師', 50000),
+                  self.ocr('林甲戊', '教師', 50000)]
+        good, need = paycheck.from_ocr(people, [self.af('林甲乙', 50000)])
+        self.assertEqual([g['姓名'] for g in good], ['林甲乙'])
+        self.assertEqual([n['原始姓名'] for n in need], ['林甲戊'])

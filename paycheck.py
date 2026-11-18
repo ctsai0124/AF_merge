@@ -711,6 +711,10 @@ def from_ocr(ocr_people, af_records):
     by_id = {(a.get('身分證') or '').strip().upper(): a
              for a in af_records if (a.get('身分證') or '').strip()}
     good, need = [], []
+    # 已被其他清冊列「姓名完全相符」占用的 AF 姓名，不可再被模糊校正搶走。
+    # 例：代理教師「陳慶園」不在 AF，卻被字形相近校正成已有本人的「陳辛慶」，
+    # 結果同一個 AF 姓名同時出現「一致」與「清冊有 AF 無」，誤導使用者。
+    claimed = {(p.get('姓名') or '').strip() for p in ocr_people or []} & known
 
     for p in ocr_people or []:
         raw = (p.get('姓名') or '').strip()
@@ -767,6 +771,10 @@ def from_ocr(ocr_people, af_records):
                 close_name = match_name_by_two_chars(raw, af_records)
                 if close_name:
                     fixed, changed, name_ok = close_name, True, True
+            if changed and fixed in claimed:
+                fixed, changed, name_ok = raw, False, False
+            elif changed and name_ok:
+                claimed.add(fixed)
 
         if name_ok and sum_ok:
             good.append({'姓名': fixed,
