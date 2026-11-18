@@ -1033,7 +1033,7 @@ SAMPLE_PEOPLE = [
      'category': '一般人員', 'dept': '總務處', 'duty_code': 'C1001', 'duty_amt': 5930},
     {'seq': 4, 'name': '張家豪', 'id': 'Z900000004', 'af_code': 'A0003',
      'category': '職工', 'dept': '總務處', 'duty_code': '', 'duty_amt': 0},
-    {'seq': 5, 'name': '陳志豪', 'id': 'Z900000005', 'af_code': 'A0004',
+    {'seq': 5, 'name': '陳大文', 'id': 'Z900000005', 'af_code': 'A0004',
      'category': '約聘雇人員', 'dept': '圖書館', 'duty_code': '', 'duty_amt': 0},
     {'seq': 6, 'name': '黃美玲', 'id': 'Z900000006', 'af_code': 'A0005',
      'category': '約聘雇人員', 'dept': '輔導室', 'duty_code': '', 'duty_amt': 0},

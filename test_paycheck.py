@@ -3,7 +3,7 @@ import unittest
 import paycheck
 
 
-def af_person(name='洪一茜'):
+def af_person(name='范小茜'):
     return {
         '姓名': name,
         '身分證': '',
@@ -14,7 +14,7 @@ def af_person(name='洪一茜'):
     }
 
 
-def inferred_person(name='洪一茜'):
+def inferred_person(name='范小茜'):
     return {
         '姓名': name,
         '職稱': '資源班',
@@ -47,15 +47,15 @@ class InferredGrossTests(unittest.TestCase):
 
     def test_two_matching_name_chars_and_unique_af_fields_can_approve(self):
         good, need = paycheck.from_ocr(
-            [inferred_person('洪一菁')], [af_person()])
+            [inferred_person('范小菁')], [af_person()])
         self.assertEqual(len(good), 1)
-        self.assertEqual(good[0]['姓名'], '洪一茜')
+        self.assertEqual(good[0]['姓名'], '范小茜')
         self.assertEqual(need, [])
 
     def test_ambiguous_af_fingerprint_still_requires_review(self):
-        duplicate = af_person('洪一菁')
+        duplicate = af_person('范小菁')
         good, need = paycheck.from_ocr(
-            [inferred_person('洪一菁')], [af_person(), duplicate])
+            [inferred_person('范小菁')], [af_person(), duplicate])
         self.assertEqual(good, [])
         self.assertEqual(len(need), 1)
         self.assertTrue(need[0]['金額可疑'])

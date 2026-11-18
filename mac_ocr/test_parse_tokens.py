@@ -21,10 +21,10 @@ class HorizontalParserTests(unittest.TestCase):
 
     def test_role_like_name_and_optional_allowances(self):
         person = self.parse(
-            ('資源班', .03), ('650', .07), ('裴淑茵', .11),
+            ('資源班', .03), ('650', .07), ('丁小茵', .11),
             ('55690', .16), ('2800', .20), ('35780', .24),
             ('4000', .28), ('98270', .37), ('2614', .42))
-        self.assertEqual(person['姓名'], '裴淑茵')
+        self.assertEqual(person['姓名'], '丁小茵')
         self.assertEqual(person['主管加給'], 0)
         self.assertEqual(person['專業加給'], 35780)
         self.assertEqual(person['導師特教'], 6800)
@@ -73,17 +73,17 @@ class HorizontalParserTests(unittest.TestCase):
 
     def test_manager_row(self):
         person = self.parse(
-            ('教師兼主任', .03), ('650', .07), ('徐盛旺', .11),
+            ('教師兼主任', .03), ('650', .07), ('丁大旺', .11),
             ('55690', .16), ('5930', .20), ('35780', .24),
             ('97400', .37))
-        self.assertEqual(person['姓名'], '徐盛旺')
+        self.assertEqual(person['姓名'], '丁大旺')
         self.assertEqual(person['主管加給'], 5930)
         self.assertEqual(person['專業加給'], 35780)
         self.assertTrue(person['加總相符'])
 
     def test_truncated_manager_title_keeps_manager_allowance(self):
         person = self.parse(
-            ('導師兼主1650', .03), ('廖雅蘭', .11),
+            ('導師兼主1650', .03), ('丁雅文', .11),
             ('55690', .16), ('5930', .20), ('35780', .24),
             ('4000', .28), ('101400', .37))
         self.assertEqual(person['主管加給'], 5930)
@@ -92,20 +92,20 @@ class HorizontalParserTests(unittest.TestCase):
 
     def test_teacher_allowance_after_professional(self):
         person = self.parse(
-            ('導師', .03), ('350', .07), ('邱淑娟', .11),
+            ('導師', .03), ('350', .07), ('丁淑文', .11),
             ('36160', .16), ('30140', .24), ('4000', .28),
             ('70300', .37))
-        self.assertEqual(person['姓名'], '邱淑娟')
+        self.assertEqual(person['姓名'], '丁淑文')
         self.assertEqual(person['導師特教'], 4000)
         self.assertTrue(person['加總相符'])
 
     def test_fallback_keeps_small_special_allowance_before_professional(self):
         # 模擬導師加給漏讀，前綴和因而無法辨識；其餘欄位仍不可左移。
         person = self.parse(
-            ('資源班', .03), ('245', .07), ('洪一茜', .11),
+            ('資源班', .03), ('245', .07), ('范小茜', .11),
             ('29270', .16), ('2800', .20), ('26560', .24),
             ('62630', .37))
-        self.assertEqual(person['姓名'], '洪一茜')
+        self.assertEqual(person['姓名'], '范小茜')
         self.assertEqual(person['主管加給'], 0)
         self.assertEqual(person['專業加給'], 26560)
         self.assertEqual(person['導師特教'], 2800)
@@ -115,7 +115,7 @@ class HorizontalParserTests(unittest.TestCase):
 
     def test_insurance_amount_cannot_replace_missing_gross_total(self):
         person = self.parse(
-            ('資源班', .03), ('245', .07), ('洪一茜', .11),
+            ('資源班', .03), ('245', .07), ('范小茜', .11),
             ('29270', .16), ('2800', .20), ('26560', .24),
             ('4000', .28), ('3107', .42))
         self.assertEqual(person['主管加給'], 0)
@@ -127,7 +127,7 @@ class HorizontalParserTests(unittest.TestCase):
 
     def test_special_and_teacher_allowance_merge_for_af(self):
         person = self.parse(
-            ('資源班', .03), ('245', .07), ('洪一茜', .11),
+            ('資源班', .03), ('245', .07), ('范小茜', .11),
             ('29270', .16), ('2800', .20), ('26560', .24),
             ('4000', .28), ('62630', .37), ('3107', .42))
         self.assertEqual(person['主管加給'], 0)
@@ -138,9 +138,9 @@ class HorizontalParserTests(unittest.TestCase):
 
     def test_childcare_allowance_is_other(self):
         person = self.parse(
-            ('教保員', .03), ('學士', .07), ('蕭惠心', .11),
+            ('教保員', .03), ('學士', .07), ('丁惠文', .11),
             ('51747', .16), ('4000', .22), ('55747', .36))
-        self.assertEqual(person['姓名'], '蕭惠心')
+        self.assertEqual(person['姓名'], '丁惠文')
         self.assertEqual(person['其他加給'], 4000)
         self.assertEqual(person['專業加給'], 0)
         self.assertTrue(person['加總相符'])

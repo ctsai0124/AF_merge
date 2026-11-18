@@ -377,8 +377,8 @@ def title_to_dept(title):
 def _similar_enough(a, b):
     """
     僅接受「字數相同且只差一個字」的情況，視為文字辨識誤差。
-    例：吳盂謙 / 吳孟謙 → 可接受
-        楊棨翔 / 林怡慈 → 不接受
+    例：周盂文 / 周孟文 → 可接受
+        宋甲丙 / 林乙丁 → 不接受
     """
     if len(a) != len(b) or not a:
         return False
