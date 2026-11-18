@@ -195,3 +195,14 @@ class CrossCheckTemplateTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TallyCodesBlankTests(unittest.TestCase):
+    def test_blank_and_nan_cells_are_not_counted(self):
+        import math
+        import pandas as pd
+        import app as app_module
+        series = pd.Series(['A0001', float('nan'), None, '', ' ', 'A0001',
+                            'B2008', math.nan])
+        self.assertEqual(app_module._tally_codes(series), 'A0001：2人\nB2008：1人')
+        self.assertEqual(app_module._tally_codes(pd.Series([math.nan, None])), '')

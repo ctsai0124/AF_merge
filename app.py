@@ -23,7 +23,7 @@ app.config.update(
 )
 
 APP_VERSION = 'v1.3.15'
-BUILD_VERSION = '2026.11.18.2'
+BUILD_VERSION = '2026.11.18.3'
 
 
 def _is_sensitive_response(path):
@@ -1364,10 +1364,25 @@ CROSS_CHECK_TEMPLATE_CATEGORY_TEXT = (
 CROSS_CHECK_CURRENT_CATEGORY_TEXT = '(一般人員、職工、約聘雇人員、政務人員)'
 
 
+def _is_blank_cell(v):
+    if v is None:
+        return True
+    try:
+        if pd.isna(v):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return str(v).strip().lower() in ('', 'nan', 'none', 'nat')
+
+
 def _tally_codes(series, sep='：', joiner='\n'):
     """把一欄裡的代碼（如薪俸表別）計數、格式化成範本裡那種
-    「A0001：30人\\nA0003：5人」多行文字。空白值不計入。"""
-    counts = Counter(str(v).strip() for v in series if str(v).strip())
+    「A0001：30人\\nA0003：5人」多行文字。空白值不計入。
+
+    AF 的 .xls 空白格經 pandas 讀入是 NaN，str() 會變成 'nan'；
+    舊版因此在正式表寫出「nan：41人」，這裡一律視為空白。"""
+    counts = Counter(str(v).strip() for v in series
+                     if not _is_blank_cell(v))
     if not counts:
         return ''
     return joiner.join(f'{code}{sep}{n}人' for code, n in sorted(counts.items()))
