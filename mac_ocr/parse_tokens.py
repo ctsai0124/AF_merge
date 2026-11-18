@@ -334,6 +334,24 @@ def detect_layout(rows):
 
 # ── 直式解析 ────────────────────────────────────────────
 
+def _row_label(r):
+    """
+    直式清冊的項目名稱有時被拆成兩個 token（「專業」「加給」、「應發數」
+    「合計」）。第一個 token 不是已知項目時，與緊鄰的第二個中文 token
+    合併後再查表；已知項目或合併後仍未知時，維持原本只看第一個 token。
+    """
+    first = (r[0]['text'] or '').strip() if r else ''
+    if first in FIELD_ALIAS or len(r) < 2:
+        return first
+    second = (r[1]['text'] or '').strip()
+    if (second and len(second) <= 4 and not is_num(second)
+            and all('\u4e00' <= ch <= '\u9fff' for ch in second)
+            and abs(r[1]['x'] - r[0]['x']) < 0.05
+            and first + second in FIELD_ALIAS):
+        return first + second
+    return first
+
+
 def _vertical_block(rows):
     """
     解析單一區塊（通常是一頁）的直式資料。
@@ -349,7 +367,7 @@ def _vertical_block(rows):
     """
     def first_row(label_pred):
         return next((r for r in rows
-                     if label_pred((r[0]['text'] or '').strip()) and len(r) > 1), None)
+                     if label_pred(_row_label(r)) and len(r) > 1), None)
 
     def money_tokens(row, minimum=1000):
         return [t for t in row[1:]
@@ -359,7 +377,7 @@ def _vertical_block(rows):
     # 第一列「至少三個四位數以上金額」，避免依賴容易誤讀的「本俸」二字。
     base_idx = next(
         (i for i, r in enumerate(rows)
-         if FIELD_ALIAS.get((r[0]['text'] or '').strip()) == '薪俸'
+         if FIELD_ALIAS.get(_row_label(r)) == '薪俸'
          and len(money_tokens(r)) >= 2),
         None)
     if base_idx is None:
@@ -417,7 +435,7 @@ def _vertical_block(rows):
     ref = None
     for want in ('應發金額', '薪俸'):
         for r in rows:
-            lab = (r[0]['text'] or '').strip()
+            lab = _row_label(r)
             if (FIELD_ALIAS.get(lab) == want
                     and len(money_tokens(r)) >= len(names)):
                 ref = r
@@ -506,9 +524,9 @@ def _vertical_block(rows):
         9: '應發金額',
     }
     exact_fields = {
-        FIELD_ALIAS[(r[0]['text'] or '').strip()]
+        FIELD_ALIAS[_row_label(r)]
         for r in rows
-        if (r[0]['text'] or '').strip() in FIELD_ALIAS
+        if _row_label(r) in FIELD_ALIAS
     }
     if len(exact_fields) < 3:
         for offset, key in positional_fields.items():
@@ -519,11 +537,39 @@ def _vertical_block(rows):
                 assign_num(rows[ri], key)
 
     for r in rows:
-        label = (r[0]['text'] or '').strip()
+        label = _row_label(r)
         if label == '身分證字號':
             assign_text(r, '身分證')
         elif label in FIELD_ALIAS:
             assign_num(r, FIELD_ALIAS[label])
+
+    def comp_sum(c):
+        return (c.get('薪俸', 0) + c.get('主管加給', 0) + c.get('專業加給', 0)
+                + c.get('導師費', 0) + c.get('特教加給', 0)
+                + c.get('地域加給', 0) + c.get('其他加給', 0) - c.get('扣款', 0))
+
+    # 找不到「應發數合計」標籤時（標籤列被標題文字擠掉），改以算術證明：
+    # 取「多數人該列數值恰等於各項加總」的那一列作為應發金額。不猜位置。
+    if not any(c.get('應發金額') for c in cols):
+        best_row, best_hits = None, 0
+        for r in rows[base_idx + 1:]:
+            vals = {}
+            for t in r:
+                txt = (t['text'] or '').strip()
+                if not txt or not is_num(txt):
+                    continue
+                bc, bd = None, 9
+                for c in cols:
+                    d = abs(t['x'] - c['nx'])
+                    if d < bd:
+                        bc, bd = c, d
+                if bc is not None and bd <= tol:
+                    vals[id(bc)] = to_int(txt)
+            hits = sum(1 for c in cols if comp_sum(c) and vals.get(id(c)) == comp_sum(c))
+            if hits > best_hits:
+                best_row, best_hits = r, hits
+        if best_row is not None and best_hits >= max(2, (len(cols) + 1) // 2):
+            assign_num(best_row, '應發金額')
 
     out = []
     for c in cols:
@@ -534,6 +580,13 @@ def _vertical_block(rows):
         s = (pay + c.get('主管加給', 0) + c.get('專業加給', 0) + duty
              + c.get('地域加給', 0) + c.get('其他加給', 0) - c.get('扣款', 0))
         total = c.get('應發金額', 0)
+        extra = c.get('地域加給', 0) + c.get('其他加給', 0) - c.get('扣款', 0)
+        if total and extra and s != total and s - extra == total:
+            # 地域／其他列誤收了鄰列數字：不含這些項目時恰等於印列應發，
+            # 以算術證明剔除，不猜測金額。
+            for k in ('地域加給', '其他加給', '扣款'):
+                c.pop(k, None)
+            s = total
         pid = (c.get('身分證') or '').upper()
         out.append({
             '姓名': c['姓名'], '職稱': c.get('職稱', ''),
@@ -541,7 +594,11 @@ def _vertical_block(rows):
             '身分證有效': valid_id(pid),
             '薪俸': pay, '主管加給': c.get('主管加給', 0),
             '專業加給': c.get('專業加給', 0), '導師特教': duty,
-            '其他加給': c.get('其他加給', 0), '應發金額': total,
+            # 地域加給、導師加給扣款等不屬 AF 四欄，但計入應發；併入「其他加給」
+            # 讓伺服器端 from_ocr 用同一條等式驗算，避免已相符的列被誤送人工確認。
+            '其他加給': (c.get('地域加給', 0) + c.get('其他加給', 0)
+                     - c.get('扣款', 0)),
+            '應發金額': total,
             '加總相符': (total > 0 and s == total),
             '加總差額': (total - s) if total else None,
             '最低信心': round(min(c['_conf']), 3),
@@ -923,6 +980,7 @@ def parse_horizontal_two_line(rows):
 
     out = []
     page_totals = {}
+    page_gross = {}
     for pno in sorted(pages):
         page_rows = pages[pno]
         salary_x = _header_column(page_rows, ('月支薪額',))
@@ -972,6 +1030,13 @@ def parse_horizontal_two_line(rows):
                     total_tokens, x, total_base_token['y'], y_tol=0.006)
             # 小計欄空白在此版面明確代表 0，不是 OCR 漏讀。
             page_totals[pno] = {key: value or 0 for key, value in totals.items()}
+            # 應發小計可能落在小計列的上行或下行，收集該欄所有候選數字；
+            # 之後必須與本頁應發合計「完全相同」才算佐證。
+            page_gross[pno] = {
+                abs(to_int(t['text'])) for t in total_tokens
+                if abs(t.get('y', 0) - total_base_token['y']) <= 0.012
+                and abs(t.get('x', 0) - gross_x) <= 0.021
+                and is_num(t.get('text', ''))}
 
         name_header_y = max(
             t['y'] for r in page_rows[:8] for t in r
@@ -1070,9 +1135,32 @@ def parse_horizontal_two_line(rows):
             '加總差額': p['應發金額'] - computed if p['應發金額'] else None,
             '最低信心': round(min(confidence or [0]), 3),
         })
-        p.pop('_page', None)
         p.pop('_order', None)
         clean.append(p)
+
+    # 本頁小計佐證：本頁各欄合計與印列小計逐欄完全相同，且應發合計也等於
+    # 印列應發小計時，本頁以項目合計推算的應發金額即獲紙本證明。
+    for pno, gross_total in page_gross.items():
+        members = [p for p in clean if p.get('_page') == pno]
+        if not members or not any(p['應發金額推算'] for p in members):
+            continue
+        totals = page_totals.get(pno) or {}
+        if not totals:
+            continue
+        fields_ok = (
+            sum(p['薪俸'] for p in members) == totals.get('薪俸', 0)
+            and sum(p['專業加給'] for p in members) == totals.get('專業加給', 0)
+            and sum(p['主管加給'] for p in members) == totals.get('主管加給', 0)
+            and sum(p['導師特教'] for p in members)
+            == totals.get('_導師', 0) + totals.get('_特教', 0))
+        if fields_ok and sum(p['應發金額'] for p in members) in gross_total:
+            for p in members:
+                if p['應發金額推算']:
+                    p['應發金額推算'] = False
+                    p['加總相符'] = True
+                    p['應發金額頁小計佐證'] = True
+    for p in clean:
+        p.pop('_page', None)
     return clean
 
 
@@ -1554,7 +1642,132 @@ def layout_diagnostics(tokens):
     return result
 
 
+_FLIP_FIELD_LABELS = ('本俸', '薪俸', '月支俸額', '月支數額', '本薪')
+
+
+def _unflip_pages(tokens):
+    """
+    舊版 OCR 存下的診斷檔裡，有些頁面座標上下顛倒（直式清冊的「姓名」列
+    跑到「本俸」列下方）。新版擷取器已依文字方向校正；此處只處理同一欄
+    標籤「姓名在本俸正下方」這種不可能的版面，把該頁 y 座標鏡射回來。
+    """
+    pages = {}
+    for t in tokens:
+        pages.setdefault(t['page'], []).append(t)
+    flip = set()
+    for page, toks in pages.items():
+        names = [t for t in toks if (t.get('text') or '').strip() == '姓名']
+        fields = [t for t in toks
+                  if (t.get('text') or '').strip() in _FLIP_FIELD_LABELS]
+        if not names or not fields:
+            continue
+        upright = any(f['y'] > n['y'] + 0.01 for n in names for f in fields
+                      if abs(f['x'] - n['x']) < 0.04)
+        flipped = any(n['y'] > f['y'] + 0.02 for n in names for f in fields
+                      if abs(f['x'] - n['x']) < 0.04)
+        if flipped and not upright:
+            flip.add(page)
+    if not flip:
+        return tokens
+    return [dict(t, y=1 - t['y']) if t['page'] in flip else t for t in tokens]
+
+
+def _ok_count(people):
+    return sum(1 for p in people if p.get('加總相符'))
+
+
+def _per_page_layout(rows, people):
+    """
+    同一檔案混用直式與橫式頁面時（例：教師頁直式、職員頁橫式），整份只用
+    一種版面會漏掉另一種頁面。各頁依自身結構判斷版面後分組解析；只有在
+    「加總相符」人數確實增加時才採用，避免影響單一版面的檔案。
+    """
+    pages = {}
+    for r in rows:
+        if r:
+            pages.setdefault(r[0]['page'], []).append(r)
+    groups = {}
+    for page in sorted(pages):
+        page_rows = pages[page]
+        heads, fields, _ = _layout_evidence(page_rows)
+        if not heads and not fields and not any(
+                '姓名' in row_text(r) for r in page_rows):
+            # 沒有表頭的接續頁跟著前一頁的版面
+            layout = next(reversed(groups), None) if groups else None
+            if layout is None:
+                continue
+        else:
+            layout = detect_layout(page_rows)
+        groups.setdefault(layout, []).extend(page_rows)
+    if len(groups) < 2:
+        return None
+    combined = []
+    for layout, group_rows_ in groups.items():
+        combined.extend(_parse_as(group_rows_, layout))
+    if _ok_count(combined) > _ok_count(people):
+        return combined
+    return None
+
+
+# 只用於「沒有應發金額」的列：名稱含這些表格用語者不可能是人名，
+# 是表頭、簽核欄或代扣欄被誤當成人員欄，直接剔除以免增加人工確認。
+_JUNK_NAME_WORDS = ('單位', '驗收', '會計室', '首長', '長官', '支薪', '姓名',
+                    '專業', '自提', '代扣', '總數', '所得', '應稅', '總計',
+                    '小計', '合計', '製表', '承辦', '頁次', '備註')
+
+
+def _drop_label_rows(people):
+    keep = []
+    for p in people:
+        name = (p.get('姓名') or '').strip()
+        if not p.get('應發金額') and (
+                _suspicious_name(name)
+                or any(w in name for w in _JUNK_NAME_WORDS)):
+            continue
+        keep.append(p)
+    return keep
+
+
+def ensemble_people(base, tiled):
+    """
+    以人為單位合併「整頁」與「分塊」兩次辨識結果，只會讓結果變好：
+      - 整頁已算術相符的列一律保留原樣，不會被分塊結果覆蓋；
+      - 整頁未相符、分塊同名（或字形相近且唯一）已相符者，改用分塊列；
+      - 分塊多找到、且整頁沒有相近姓名或同額同字的人，才補入。
+    分塊列本身也必須算術相符（且非推算應發），否則一律不採用。
+    """
+    from difflib import SequenceMatcher
+
+    def sim(a, b):
+        return SequenceMatcher(None, a or '', b or '').ratio()
+
+    def good(p):
+        return bool(p.get('加總相符')) and not p.get('應發金額推算')
+
+    out = list(base)
+    used = set()
+    for t in tiled:
+        if not good(t) or _suspicious_name(t.get('姓名')):
+            continue
+        name = (t.get('姓名') or '').strip()
+        exact = [i for i, b in enumerate(out) if (b.get('姓名') or '').strip() == name]
+        close = exact or [i for i, b in enumerate(out)
+                          if sim(name, b.get('姓名')) >= 0.6]
+        if close:
+            if len(close) == 1 and close[0] not in used and not good(out[close[0]]):
+                out[close[0]] = t
+                used.add(close[0])
+            continue
+        if any(b.get('薪俸') == t.get('薪俸') and b.get('應發金額') == t.get('應發金額')
+               and set(b.get('姓名') or '') & set(name) for b in out):
+            continue
+        out.append(t)
+        used.add(len(out) - 1)
+    return out
+
+
 def parse_tokens(tokens, preferred_layout=None):
+    tokens = _unflip_pages(tokens)
     rows = group_rows(tokens)
     detected = detect_layout(rows)
     candidates = {
@@ -1571,7 +1784,11 @@ def parse_tokens(tokens, preferred_layout=None):
         scores[preferred_layout] += 1.5
 
     layout = max(scores, key=scores.get)
-    return candidates[layout], layout
+    people = candidates[layout]
+    mixed = _per_page_layout(rows, people)
+    if mixed is not None:
+        people = mixed
+    return _drop_label_rows(people), layout
 
 
 def diagnose(tokens):

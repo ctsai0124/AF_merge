@@ -7,7 +7,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CFG = json.load(open(os.path.join(HERE, 'config.json'), encoding='utf-8'))
 SERVER, KEY = CFG['server'].rstrip('/'), CFG['key']
 POLL_MIN, POLL_MAX = 3, 60
-WORKER_VERSION = 'v15'
+WORKER_VERSION = 'v16'
 
 sys.path.insert(0, HERE)
 from parse_tokens import (
@@ -18,6 +18,7 @@ from parse_tokens import (
     _is_grid_two_line,
     group_rows,
     merge_token_sets,
+    ensemble_people,
 )
 
 DIAG_DIR = os.path.join(HERE, 'diagnostics')
@@ -121,6 +122,12 @@ def ocr(pdf_bytes, preferred_layout=None, job_id=''):
                             and quality(tiled_people) > quality(people)):
                         print('  採用分塊補辨結果', flush=True)
                         tokens, people, layout = merged, tiled_people, tiled_layout
+                    elif tiled_layout == layout:
+                        # 其他版面：以人為單位合併，整頁已相符的列不受影響。
+                        combined = ensemble_people(people, tiled_people)
+                        if quality(combined) > quality(people):
+                            print('  以分塊結果補強未相符／漏讀人員', flush=True)
+                            people = combined
                 except Exception as e:
                     print(f'  分塊補辨失敗，沿用整頁結果：{e}', flush=True)
         print(f'  版面判定：{layout}', flush=True)

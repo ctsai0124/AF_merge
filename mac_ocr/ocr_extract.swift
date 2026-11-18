@@ -5,12 +5,44 @@ import AppKit
 import PDFKit
 
 struct Token: Codable {
-    let text: String
-    let x: Double
-    let y: Double
-    let w: Double
-    let conf: Float
-    let page: Int
+    var text: String
+    var x: Double
+    var y: Double
+    var w: Double
+    var conf: Float
+    var page: Int
+    // 以下兩欄只在程式內部使用，不輸出：文字方向（0/90/180/270，影像座標
+    // y 朝上量測）與沿文字方向的像素長度，供整頁方向校正。
+    var dir: Int = 0
+    var lenPx: Double = 0
+
+    enum CodingKeys: String, CodingKey { case text, x, y, w, conf, page }
+}
+
+/// 掃描時紙張放反或橫放：Vision 仍讀得出字，但座標是影像座標，會讓整頁
+/// 上下左右顛倒（例：姓名列跑到本俸列下方）。以整頁多數文字的方向判定，
+/// 把座標轉回「文字正立」的版面；正立頁面完全不變動。
+func normalizeOrientation(_ toks: [Token], imageW: Double, imageH: Double) -> [Token] {
+    var bins = [0, 0, 0, 0]
+    for t in toks where t.text.count >= 2 { bins[t.dir / 90] += 1 }
+    let total = bins.reduce(0, +)
+    guard total >= 5, let best = bins.indices.max(by: { bins[$0] < bins[$1] }),
+          best != 0, Double(bins[best]) >= 0.6 * Double(total) else { return toks }
+    return toks.map { t in
+        var o = t
+        switch best {
+        case 2:   // 上下顛倒
+            o.x = 1 - t.x; o.y = 1 - t.y
+            o.w = t.lenPx / imageW
+        case 1:   // 文字由下往上：頁面逆時針轉了 90°
+            o.x = 1 - t.y; o.y = t.x
+            o.w = t.lenPx / imageH
+        default:  // 3：文字由上往下：頁面順時針轉了 90°
+            o.x = t.y; o.y = 1 - t.x
+            o.w = t.lenPx / imageH
+        }
+        return o
+    }
 }
 
 /// 在整頁影像的一個矩形區塊上執行 Vision，座標換回整頁的 0–1 比例。
@@ -39,7 +71,8 @@ func tokens(from image: CGImage, page: Int,
             }
         }
         return Token(text: t.text, x: rx + t.x * rw, y: ry + t.y * rh,
-                     w: t.w * rw, conf: t.conf, page: page)
+                     w: t.w * rw, conf: t.conf, page: page,
+                     dir: t.dir, lenPx: t.lenPx)
     }
 }
 
@@ -64,15 +97,21 @@ func recognize(_ image: CGImage, page: Int) -> [Token] {
             searchStart = r.upperBound
 
             var box = obs.boundingBox
+            var dir = 0, lenPx = Double(box.width) * Double(image.width)
             if let bb = try? cand.boundingBox(for: r) {
                 box = bb.boundingBox
+                let dx = Double(bb.bottomRight.x - bb.bottomLeft.x) * Double(image.width)
+                let dy = Double(bb.bottomRight.y - bb.bottomLeft.y) * Double(image.height)
+                let ang = atan2(dy, dx) * 180 / Double.pi
+                dir = (Int(((ang + 45 + 360).truncatingRemainder(dividingBy: 360)) / 90) % 4) * 90
+                lenPx = (dx * dx + dy * dy).squareRoot()
             }
             out.append(Token(text: String(piece),
                              x: Double(box.midX),
                              y: Double(1.0 - box.midY),
                              w: Double(box.width),
                              conf: cand.confidence,
-                             page: page))
+                             page: page, dir: dir, lenPx: lenPx))
         }
     }
     return out
@@ -134,8 +173,9 @@ for pi in 0..<doc.pageCount {
           let rep = NSBitmapImageRep(data: tiff),
           let cg = rep.cgImage else { continue }
 
+    var pageTokens: [Token] = []
     if tileCols == 1 && tileRows == 1 {
-        all.append(contentsOf: tokens(from: cg, page: pi))
+        pageTokens = tokens(from: cg, page: pi)
     } else {
         let overlap = 0.04
         for ci in 0..<tileCols {
@@ -144,13 +184,15 @@ for pi in 0..<doc.pageCount {
                 let x1 = min(1, Double(ci + 1) / Double(tileCols) + overlap)
                 let y0 = max(0, Double(ri) / Double(tileRows) - overlap)
                 let y1 = min(1, Double(ri + 1) / Double(tileRows) + overlap)
-                all.append(contentsOf: tokens(
+                pageTokens.append(contentsOf: tokens(
                     from: cg, page: pi,
                     region: CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0),
                     dropEdges: true))
             }
         }
     }
+    all.append(contentsOf: normalizeOrientation(
+        pageTokens, imageW: Double(cg.width), imageH: Double(cg.height)))
 }
 
 let enc = JSONEncoder()

@@ -1336,6 +1336,16 @@ function renderCompare(d) {
        + '<div class="names">' + okNames.map(esc).join('、') + '</div></details>';
   }
 
+  // 辨識誤差自動校正：OCR 與 AF 只差一個字元（或整欄漏讀），且印列應發金額
+  // 以 AF 數值驗算完全相符者，已採 AF 值。列出來讓使用者知道、可自行抽查。
+  const fixedRows = d.results.filter(r => (r['OCR校正'] || []).length);
+  if (fixedRows.length) {
+    h += '<details class="cmp-ok"><summary>已自動校正 ' + fixedRows.length
+       + ' 人的辨識誤差（印列應發金額驗算相符，點擊展開）</summary><div class="names">'
+       + fixedRows.map(r => esc(r['姓名']) + '：' + r['OCR校正'].map(esc).join('；')).join('<br>')
+       + '</div></details>';
+  }
+
   if (subRows.length) {
     const bad = subRows.filter(r => r['狀態'] === 'diff').length;
     h += '<details class="cmp-ok" style="margin-top:8px"><summary>另有 '

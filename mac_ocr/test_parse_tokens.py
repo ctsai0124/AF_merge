@@ -301,5 +301,59 @@ class MergeTokenSetsTests(unittest.TestCase):
         self.assertEqual(len(parse_tokens.merge_token_sets(a, b)), 3)
 
 
+
+class VerticalRobustnessTests(unittest.TestCase):
+    """直式清冊：拆字標籤、上下顛倒頁面、標籤誤判列與以算術找應發列（虛構資料）。"""
+
+    NAMES = ('王小明', '李大華', '陳美玲')
+    PAY = (55690, 44970, 35010)
+    PRO = (35780, 26830, 26830)
+    DUTY = (5930, 0, 5930)
+
+    def tok(self, text, x, y):
+        return {'text': text, 'x': x, 'y': y, 'w': 0.04, 'conf': 1.0, 'page': 0}
+
+    def build(self, total_label=('應發數', '合計')):
+        xs = (0.3, 0.5, 0.7)
+        out = [self.tok('職稱', 0.05, 0.08)]
+        out += [self.tok('教師', x, 0.08) for x in xs]
+        out.append(self.tok('姓名', 0.05, 0.12))
+        out += [self.tok(n, x, 0.12) for n, x in zip(self.NAMES, xs)]
+        rows = [(('本俸',), self.PAY, 0.20), (('專業', '加給'), self.PRO, 0.25),
+                (('職務', '加給'), self.DUTY, 0.30)]
+        totals = tuple(a + b + c for a, b, c in zip(self.PAY, self.PRO, self.DUTY))
+        rows.append((total_label, totals, 0.40))
+        for labels, vals, y in rows:
+            for i, lab in enumerate(labels):
+                out.append(self.tok(lab, 0.05 + 0.03 * i, y))
+            out += [self.tok(f'{v:,}', x + 0.02, y) for v, x in zip(vals, xs) if v]
+        return out
+
+    def check(self, tokens):
+        people, layout = parse_tokens.parse_tokens(tokens)
+        self.assertEqual(layout, 'vertical')
+        self.assertEqual([p['姓名'] for p in people], list(self.NAMES))
+        self.assertTrue(all(p['加總相符'] for p in people))
+        self.assertEqual([p['專業加給'] for p in people], list(self.PRO))
+        self.assertEqual([p['主管加給'] for p in people], list(self.DUTY))
+        return people
+
+    def test_split_labels(self):
+        self.check(self.build())
+
+    def test_upside_down_page_is_mirrored(self):
+        toks = [dict(t, y=1 - t['y']) for t in self.build()]
+        self.check(toks)
+
+    def test_total_row_found_by_arithmetic(self):
+        # 標題文字擠在標籤欄，「應發數合計」無法辨認；改以加總恰等於該列判定
+        self.check(self.build(total_label=('高雄市某某國小員工每月薪津發放清冊',)))
+
+    def test_label_rows_without_total_are_dropped(self):
+        kept = parse_tokens._drop_label_rows([
+            {'姓名': '代扣數', '應發金額': 0}, {'姓名': '總務單位', '應發金額': 0},
+            {'姓名': '王小明', '應發金額': 0}, {'姓名': '王小明', '應發金額': 100}])
+        self.assertEqual([k['姓名'] for k in kept], ['王小明', '王小明'])
+
 if __name__ == '__main__':
     unittest.main()

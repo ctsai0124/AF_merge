@@ -70,6 +70,99 @@ class InferredGrossTests(unittest.TestCase):
         self.assertTrue(need[0]['金額可疑'])
 
 
+
+class OcrPlausibleTests(unittest.TestCase):
+    def test_single_char_errors(self):
+        P = paycheck.ocr_plausible
+        self.assertTrue(P(35180, 35780))     # 7→1
+        self.assertTrue(P(55890, 55690))     # 6→8
+        self.assertTrue(P(53690, 55690))     # 5→3 單字替換
+        self.assertTrue(P(59630, 59360))     # 相鄰互換
+        self.assertTrue(P(559301, 55930))    # 尾端多讀 1
+        self.assertTrue(P(5930, 59300))      # 漏一位
+        self.assertFalse(P(55690, 55690))
+        self.assertFalse(P(45690, 55600))    # 兩位不同
+        self.assertFalse(P(5930, 35780))     # 完全不同
+        self.assertFalse(P(100, 0))
+
+
+class AfProofCorrectionTests(unittest.TestCase):
+    """AF 正確時兩邊數字完全相同；OCR 單字誤差須有印列應發佐證才自動校正（虛構資料）。"""
+
+    AF = [{'姓名': '王小明', '身分證': 'X', '薪俸': 55690, '專業加給': 35780,
+           '主管加給': 5930, '導師特教': 0}]
+
+    def ocr(self, **kw):
+        p = {'姓名': '王小明', '職稱': '教師', '身分證': '', '身分證有效': False,
+             '薪俸': 55690, '專業加給': 35780, '主管加給': 5930, '導師特教': 0,
+             '其他加給': 0, '應發金額': 97400, '應發金額推算': False,
+             '最低信心': 1.0}
+        p.update(kw)
+        return p
+
+    def test_digit_misread_with_total_proof_is_auto_corrected(self):
+        good, need = paycheck.from_ocr([self.ocr(專業加給=35180)], self.AF)
+        self.assertEqual(need, [])
+        self.assertEqual(good[0]['專業加給'], 35780)
+        self.assertTrue(good[0]['_ocr_corrected'])
+        out = paycheck.compare(good, self.AF)
+        self.assertEqual(out['summary']['一致'], 1)
+        self.assertEqual(out['summary']['OCR自動校正'], 1)
+
+    def test_missed_field_with_total_proof_is_filled(self):
+        good, need = paycheck.from_ocr([self.ocr(主管加給=0)], self.AF)
+        self.assertEqual(need, [])
+        self.assertEqual(good[0]['主管加給'], 5930)
+
+    def test_two_missed_fields_stay_in_review(self):
+        good, need = paycheck.from_ocr([self.ocr(薪俸=0, 專業加給=0)], self.AF)
+        self.assertEqual(good, [])
+
+    def test_total_misread_when_fields_equal_af(self):
+        good, need = paycheck.from_ocr([self.ocr(應發金額=97100)], self.AF)
+        self.assertEqual(need, [])
+        self.assertEqual(good[0]['應發金額'], 97400)
+
+    def test_real_difference_stays_in_review(self):
+        # 清冊真的少發職務加給：印列應發與 AF 代入後不符，不可校正
+        good, need = paycheck.from_ocr(
+            [self.ocr(主管加給=0, 應發金額=91470)], self.AF)
+        out = paycheck.compare(good, self.AF)
+        self.assertEqual(out['summary']['有差異'], 1)
+        self.assertEqual(out['summary']['OCR自動校正'], 0)
+        # 清冊自身不平衡又與 AF 差距大：維持人工確認
+        good, need = paycheck.from_ocr(
+            [self.ocr(主管加給=0, 應發金額=95000)], self.AF)
+        self.assertEqual(good, [])
+        self.assertEqual(len(need), 1)
+
+    def test_large_difference_stays_in_review(self):
+        good, need = paycheck.from_ocr(
+            [self.ocr(專業加給=26830, 應發金額=97400)], self.AF)
+        self.assertEqual(good, [])
+
+    def test_no_printed_total_stays_in_review(self):
+        good, need = paycheck.from_ocr(
+            [self.ocr(專業加給=35180, 應發金額=0)], self.AF)
+        self.assertEqual(good, [])
+        good, need = paycheck.from_ocr(
+            [self.ocr(專業加給=35180, 應發金額=97400, 應發金額推算=True)], self.AF)
+        self.assertEqual(good, [])
+
+    def test_af_typo_is_not_hidden(self):
+        # AF 打錯一位數：清冊讀值正確且自洽，必須呈現為差異而非被 AF 覆蓋
+        af = [dict(self.AF[0], 專業加給=35180)]
+        good, need = paycheck.from_ocr([self.ocr()], af)
+        out = paycheck.compare(good, af)
+        self.assertEqual(out['summary']['有差異'], 1)
+        self.assertEqual(out['summary']['OCR自動校正'], 0)
+
+    def test_name_misread_plus_digit_misread(self):
+        good, need = paycheck.from_ocr(
+            [self.ocr(姓名='王小朋', 薪俸=55890)], self.AF)
+        self.assertEqual(need, [])
+        self.assertEqual(good[0]['姓名'], '王小明')
+
 if __name__ == '__main__':
     unittest.main()
 

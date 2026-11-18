@@ -508,6 +508,7 @@ def compare(pdf_people, af_records):
             '姓名': a['姓名'], '職稱': p.get('職稱', ''), '單位': a.get('單位', ''),
             '身分證': a['身分證'], '配對依據': why,
             '狀態': 'diff' if diffs else 'ok', '差異': diffs,
+            'OCR校正': list(p.get('_ocr_corrected') or []),
             '需確認': why not in ('姓名',),
             # AF 有配對到的人一律列入主清單、不收合：
             # AF 有建 ＝ 屬於稽核範圍（例：AF 有建的約僱人員）。
@@ -536,6 +537,7 @@ def compare(pdf_people, af_records):
         '待人工指定': len(ambiguous),
         '其他人員': len(sub),
         '其他人員有差異': sum(1 for r in sub if r['狀態'] in ('diff', 'pdf_only')),
+        'OCR自動校正': sum(1 for r in results if r.get('OCR校正')),
     }
     return {'summary': summary, 'results': results, 'ambiguous': ambiguous}
 
@@ -694,6 +696,97 @@ def annotate_arith(people):
     return people
 
 
+# ── 9a. OCR 誤差判定（Leo 的領域規則） ─────────────────
+# AF 正確時，AF 與薪資清冊數字「完全相同」；真正有問題時差距通常很大。
+# 因此 OCR 讀值與 AF 只差「一個字元等級」的錯誤，且印列應發金額能以 AF
+# 數值精確驗算時，視為辨識誤差並以 AF 值自動校正，不再送人工確認。
+
+_CONFUSABLE = [set('17'), set('38'), set('068'), set('56'), set('0689'),
+               set('49'), set('25')]
+
+
+def _confusable(a, b):
+    return any(a in g and b in g for g in _CONFUSABLE)
+
+
+def ocr_plausible(ocr_value, af_value):
+    """
+    ocr_value 是否可能是 af_value 被 OCR 誤讀的結果：單一數字替換／插入／
+    刪除、相鄰兩位互換、尾端多讀一個 1（表格框線）。完全相同回傳 False。
+    """
+    a, b = str(abs(int(ocr_value or 0))), str(abs(int(af_value or 0)))
+    if a == b or int(af_value or 0) <= 0:
+        return False
+    if len(a) == len(b):
+        diff = [i for i in range(len(a)) if a[i] != b[i]]
+        if len(diff) == 1:
+            return True
+        if (len(diff) == 2 and diff[1] == diff[0] + 1
+                and a[diff[0]] == b[diff[1]] and a[diff[1]] == b[diff[0]]):
+            return True
+        return False
+    if abs(len(a) - len(b)) != 1:
+        return False
+    longer, shorter = (a, b) if len(a) > len(b) else (b, a)
+    return any(longer[:i] + longer[i + 1:] == shorter
+               for i in range(len(longer)))
+
+
+def _resolve_af(raw, pid, id_ok, by_id, af_records, known, claimed):
+    """找出唯一 AF 對象；姓名需完全相符、正規化相符，或唯一兩字同位相符。"""
+    if id_ok:
+        return by_id[pid]
+    if raw in known:
+        return next(a for a in af_records if a['姓名'] == raw)
+    fixed, changed = fix_name(raw, known)
+    if changed and fixed in known and fixed not in claimed:
+        if sum(x == y for x, y in zip(_name_key(raw), _name_key(fixed))) >= 2:
+            return next(a for a in af_records if a['姓名'] == fixed)
+    close = match_name_by_two_chars(raw, af_records)
+    if close and close not in claimed:
+        return next(a for a in af_records if a['姓名'] == close)
+    return None
+
+
+def af_proof_correction(vals, other, total, total_inferred, af):
+    """
+    以 AF 數值校正 OCR 誤差。只有在下列條件全部成立時才回傳校正內容：
+      1. 有印列應發金額（非推算）可作為獨立證據；
+      2. 每個與 AF 不同的欄位，都是 OCR 可能的單字元誤讀，或整欄漏讀（0）；
+      3. 用 AF 值代入後，四欄＋其他加給恰等於印列應發金額。
+    另一種情形：四欄皆與 AF 相同、只有應發金額與四欄合計差一個字元，
+    視為應發金額誤讀，以合計校正。其餘一律回傳 None（維持人工確認）。
+    回傳 (校正後四欄, 校正後應發, 校正說明清單) 或 None。
+    """
+    if not total or total_inferred:
+        return None
+    af_vals = {f: _n(af.get(f, 0)) for f in FIELDS}
+    notes = []
+    for f in FIELDS:
+        v, a = vals[f], af_vals[f]
+        if v == a:
+            continue
+        if v == 0 and a > 0:
+            notes.append(f'{FIELD_LABEL[f]} 漏讀，依 AF {a:,} 補入')
+        elif ocr_plausible(v, a):
+            notes.append(f'{FIELD_LABEL[f]} 辨識 {v:,} → AF {a:,}')
+        else:
+            return None
+    s_af = sum(af_vals.values()) + other
+    if notes:
+        # 證據強度：最多一欄整欄漏讀、最多兩處校正，且至少一個非零欄位
+        # 本身就與 AF 完全相同。否則只憑總額相等，無法排除欄位間挪移。
+        missed = sum(1 for n in notes if '漏讀' in n)
+        exact = sum(1 for f in FIELDS if vals[f] and vals[f] == af_vals[f])
+        if s_af != total or missed > 1 or len(notes) > 2 or not exact:
+            return None
+        return af_vals, total, notes
+    # 四欄完全一致：檢查是否只是應發金額誤讀
+    if s_af != total and ocr_plausible(total, s_af):
+        return af_vals, s_af, [f'應發金額 辨識 {total:,} → 四欄合計 {s_af:,}']
+    return None
+
+
 # ── 9. 由 Mac 端 OCR 結果轉為可比對資料 ─────────────────
 
 def from_ocr(ocr_people, af_records):
@@ -712,7 +805,7 @@ def from_ocr(ocr_people, af_records):
              for a in af_records if (a.get('身分證') or '').strip()}
     good, need = [], []
     # 已被其他清冊列「姓名完全相符」占用的 AF 姓名，不可再被模糊校正搶走。
-    # 例：代理教師「陳慶園」不在 AF，卻被字形相近校正成已有本人的「陳辛慶」，
+    # 例：代理教師「林乙丙」不在 AF，卻被字形相近校正成已有本人的「林甲乙」，
     # 結果同一個 AF 姓名同時出現「一致」與「清冊有 AF 無」，誤導使用者。
     claimed = {(p.get('姓名') or '').strip() for p in ocr_people or []} & known
 
@@ -776,12 +869,27 @@ def from_ocr(ocr_people, af_records):
             elif changed and name_ok:
                 claimed.add(fixed)
 
+        corrected = []
+        if not (name_ok and sum_ok):
+            af = (next(a for a in af_records if a['姓名'] == fixed)
+                  if name_ok and fixed in known else
+                  _resolve_af(raw, pid, id_ok, by_id, af_records, known, claimed))
+            fix = (af_proof_correction(vals, other, total, total_inferred, af)
+                   if af else None)
+            if fix:
+                vals, total, corrected = dict(fix[0]), fix[1], fix[2]
+                if not id_ok and af['姓名'] != raw:
+                    changed = True
+                fixed, name_ok, sum_ok = af['姓名'], True, True
+                claimed.add(fixed)
+
         if name_ok and sum_ok:
             good.append({'姓名': fixed,
                          '職稱': re.sub(r'^\d+\s*', '', p.get('職稱', '')).strip(),
                          '身分證': pid if id_ok else '',
                          '應發金額': total, '其他加給': other,
-                         '_ocr_name_fixed': changed, **vals})
+                         '_ocr_name_fixed': changed,
+                         '_ocr_corrected': corrected, **vals})
             continue
 
         reasons = []
