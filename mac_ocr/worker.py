@@ -7,7 +7,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CFG = json.load(open(os.path.join(HERE, 'config.json'), encoding='utf-8'))
 SERVER, KEY = CFG['server'].rstrip('/'), CFG['key']
 POLL_MIN, POLL_MAX = 3, 60
-WORKER_VERSION = 'v14'
+WORKER_VERSION = 'v15'
 
 sys.path.insert(0, HERE)
 from parse_tokens import (
@@ -15,7 +15,9 @@ from parse_tokens import (
     layout_diagnostics,
     _suspicious_name,
     _is_two_line_horizontal,
+    _is_grid_two_line,
     group_rows,
+    merge_token_sets,
 )
 
 DIAG_DIR = os.path.join(HERE, 'diagnostics')
@@ -78,16 +80,23 @@ def ocr(pdf_bytes, preferred_layout=None, job_id=''):
     try:
         swift = os.path.join(HERE, 'ocr_extract.swift')
 
-        def recognize(scale):
-            out = subprocess.run(
-                ['swift', swift, pdf_path, '--scale', str(scale)],
-                capture_output=True, timeout=300)
+        def recognize(scale, tiles=None):
+            cmd = ['swift', swift, pdf_path, '--scale', str(scale)]
+            if tiles:
+                cmd += ['--tiles', tiles]
+            out = subprocess.run(cmd, capture_output=True, timeout=300)
             if out.returncode != 0:
                 raise RuntimeError(out.stderr.decode()[:300])
             return json.loads(out.stdout)
 
+        def quality(found):
+            return (sum(1 for p in found if p.get('加總相符')),
+                    -sum(1 for p in found if _suspicious_name(p.get('姓名'))),
+                    len(found))
+
         tokens = recognize(3)
-        if _is_two_line_horizontal(group_rows(tokens)):
+        rows = group_rows(tokens)
+        if _is_two_line_horizontal(rows):
             # A3 雙行表在不同縮放倍率各有少數姓名／粗體金額失真。第二次
             # 只補進姓名、職稱與薪資項目欄，避免把薪俸起始列重複計數。
             standard = tokens
@@ -95,7 +104,25 @@ def ocr(pdf_bytes, preferred_layout=None, job_id=''):
             tokens.extend(t for t in standard
                           if t.get('x', 0) < 0.16
                           or 0.19 <= t.get('x', 0) <= 0.46)
-        people, layout = parse_all(tokens, preferred_layout=preferred_layout)
+            people, layout = parse_all(tokens, preferred_layout=preferred_layout)
+        else:
+            people, layout = parse_all(tokens, preferred_layout=preferred_layout)
+            # 整頁辨識偶爾整欄漏字（例：A4 橫式每人兩行清冊的月支俸額／學術研究／
+            # 應發合計欄）。遇到該版面或結果不完整時，再以 2×2 分塊補辨並去重合併。
+            # 只有合併後確認是「每人兩行共用表頭」版面、且算術相符人數變多時才採用；
+            # 其他既有版面（直式、一人一列、A3 雙行）一律維持整頁結果，避免回歸。
+            if _is_grid_two_line(rows) or not people or any(
+                    not p.get('加總相符') for p in people):
+                try:
+                    merged = merge_token_sets(recognize(3, '2x2'), tokens)
+                    tiled_people, tiled_layout = parse_all(
+                        merged, preferred_layout=preferred_layout)
+                    if (_is_grid_two_line(group_rows(merged))
+                            and quality(tiled_people) > quality(people)):
+                        print('  採用分塊補辨結果', flush=True)
+                        tokens, people, layout = merged, tiled_people, tiled_layout
+                except Exception as e:
+                    print(f'  分塊補辨失敗，沿用整頁結果：{e}', flush=True)
         print(f'  版面判定：{layout}', flush=True)
         ok = sum(1 for p in people if p.get('加總相符'))
         suspicious = sum(1 for p in people if _suspicious_name(p.get('姓名')))

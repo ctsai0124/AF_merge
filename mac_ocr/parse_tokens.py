@@ -217,6 +217,47 @@ def merge_number_fragments(row):
     return [out[0]] + sorted(out[1:], key=lambda t: t['x'])
 
 
+def merge_token_sets(*token_sets):
+    """
+    合併同一份 PDF 的多次 OCR 結果（例如整頁＋分塊），去除重複辨識的同一格文字。
+
+    兩個 token 位於同頁、基線相差不到 0.006，且水平範圍重疊至少為較窄者的
+    一半，即視為同一格；保留信心較高者，同分時保留字數較多者（較不可能被截斷）。
+    """
+    merged = []
+    by_page = {}
+    for tokens in token_sets:
+        for t in tokens or []:
+            if not (t.get('text') or '').strip():
+                continue
+            cand = dict(t)
+            left = cand.get('x', 0) - cand.get('w', 0) / 2
+            right = cand.get('x', 0) + cand.get('w', 0) / 2
+            dup_index = None
+            for i in by_page.get(cand.get('page'), []):
+                o = merged[i]
+                if abs(o.get('y', 0) - cand.get('y', 0)) > 0.006:
+                    continue
+                ol = o.get('x', 0) - o.get('w', 0) / 2
+                orr = o.get('x', 0) + o.get('w', 0) / 2
+                overlap = min(right, orr) - max(left, ol)
+                narrow = min(right - left, orr - ol)
+                if narrow <= 0 or overlap < narrow * 0.5:
+                    continue
+                dup_index = i
+                break
+            if dup_index is None:
+                by_page.setdefault(cand.get('page'), []).append(len(merged))
+                merged.append(cand)
+                continue
+            o = merged[dup_index]
+            better = (float(cand.get('conf', 0)), len(norm_text(cand['text']))) > \
+                     (float(o.get('conf', 0)), len(norm_text(o['text'])))
+            if better:
+                merged[dup_index] = cand
+    return merged
+
+
 def group_rows(tokens):
     tokens = sorted(tokens, key=lambda t: (t['page'], t['y']))
     rows, cur, last = [], [], None
@@ -279,7 +320,7 @@ def detect_layout(rows):
     直式版面的特徵：某一列以「姓名」開頭，後面接多個人名；
     且另有一列以「本俸／薪俸」等項目名稱開頭。
     """
-    if _is_two_line_horizontal(rows):
+    if _is_two_line_horizontal(rows) or _is_grid_two_line(rows):
         return 'horizontal'
 
     heads, fields, name_rows = _layout_evidence(rows)
@@ -1035,6 +1076,426 @@ def parse_horizontal_two_line(rows):
     return clean
 
 
+# ── 橫式「每人兩行、上下欄共用表頭」清冊 ───────────────────
+# 例：員工編號／員工姓名（第二行職稱）｜帳號（第二行俸點）｜月支俸額（第二行
+# 特教津貼）｜職務加給（補發薪津）｜專業加給（外縣市交通）｜學術研究（輔導津貼）
+# ｜導師費｜公保費｜應發合計｜各項扣款…｜應扣合計｜實發總額。每頁底部有
+# 「本頁小計」「群組累計」各兩行，再加「單位人數累計」頁尾。
+# 以表頭結構辨識，不依校名；欄位 x 由表頭文字定位，缺字時用同份文件其他頁。
+
+GRID_HEADER_LABELS = ('員工編號', '員工姓名', '月支俸額', '職務加給', '專業加給',
+                      '學術研究', '導師費', '公保費', '應發合計', '應扣合計',
+                      '實發總額', '特教津貼', '補發薪津', '俸點')
+# 上方欄名 → (第一行欄位, 第二行欄位)
+GRID_COLUMNS = (
+    ('月支俸額', '薪俸', '_特教'),
+    ('職務加給', '主管加給', '_補發'),
+    ('專業加給', '專業加給', '_交通'),
+    ('學術研究', '_學術', '_輔導'),
+    ('導師費', '_導師', None),
+    ('公保費', '_公保', None),
+)
+GRID_PAY_KEYS = ('薪俸', '_特教', '主管加給', '_補發', '專業加給', '_交通',
+                 '_學術', '_輔導', '_導師', '_公保')
+# 找不到表頭字時，相對「月支俸額」欄的典型距離（A4 橫式實測）。
+GRID_DEFAULT_OFFSET = {
+    '月支俸額': 0.0, '職務加給': 0.046, '專業加給': 0.088, '學術研究': 0.133,
+    '導師費': 0.181, '公保費': 0.226, '應發合計': 0.271,
+    '應扣合計': 0.634, '實發總額': 0.678,
+}
+GRID_NUM_SHIFT = 0.007   # 金額靠右對齊，數字中心通常在表頭中心右側
+GRID_TOTAL_WORDS = ('小計', '累計', '合計', '總計')
+GRID_ZERO_LOOKALIKES = {'Q', 'O', 'o', 'D', '口', 'Di', 'DI', '〇', 'U'}
+
+
+def _page_groups(rows):
+    pages = {}
+    for r in rows:
+        if r:
+            pages.setdefault(r[0]['page'], []).append(r)
+    return pages
+
+
+def _grid_num(text, zero_lookalike=False):
+    """讀表格金額；容許掃描框線造成的前後標點（例：「：54160」「35780|」）。"""
+    s = norm_text(text).strip()
+    if zero_lookalike and s in GRID_ZERO_LOOKALIKES:
+        return 0
+    s = re.sub(r'^[^\d\-]+', '', s)
+    s = re.sub(r'[^\d]+$', '', s)
+    if not s:
+        return None
+    if not (re.fullmatch(r'-?\d+', s) or re.fullmatch(r'-?\d{1,3}(?:,\d{3})+', s)):
+        return None
+    return to_int(s)
+
+
+def _grid_is_name(s):
+    """同 is_name，但接受擴充 A 區漢字（Vision 偶爾把罕用字讀成該區字元）。"""
+    s = (s or '').strip()
+    if not 2 <= len(s) <= 4:
+        return False
+    if not all('\u4e00' <= c <= '\u9fff' or '\u3400' <= c <= '\u4dbf' for c in s):
+        return False
+    return not any(w in s for w in TITLE_WORDS) and not _suspicious_name(s)
+
+
+def _grid_header_hits(page_rows):
+    """回傳本頁表頭區辨識到的欄名與 x 座標（多欄名黏成一個 token 時依字元位置估算）。"""
+    hits = {}
+    for r in page_rows:
+        if not r or r[0].get('y', 1) > 0.25:
+            continue
+        for t in r:
+            text = norm_text(t.get('text', '')).replace(' ', '')
+            for label in GRID_HEADER_LABELS:
+                if label not in text or (label in hits and not hits[label][1]):
+                    continue
+                if len(text) > len(label) + 1:
+                    w = float(t.get('w', 0))
+                    pos = text.index(label) + len(label) / 2
+                    hits.setdefault(label, (t['x'] - w / 2 + w * pos / len(text), True))
+                else:
+                    hits[label] = (t['x'], False)
+    return hits
+
+
+def _is_grid_two_line(rows):
+    """每人兩行、表頭含員工姓名／月支俸額／應發合計等的 A4 橫式清冊。"""
+    for page_rows in _page_groups(rows).values():
+        hits = _grid_header_hits(page_rows)
+        primary = sum(label in hits for label in ('月支俸額', '應發合計', '員工姓名',
+                                                   '員工編號'))
+        secondary = sum(label in hits for label in ('特教津貼', '補發薪津', '俸點',
+                                                     '學術研究', '職務加給',
+                                                     '應扣合計', '實發總額'))
+        if primary >= 3 and secondary >= 2:
+            return True
+    return False
+
+
+def _grid_columns(pages):
+    """以每頁表頭定位欄位；缺漏欄名用其他頁的中位數或典型距離補齊。"""
+    per_page, collected = {}, {}
+    for pno, page_rows in pages.items():
+        hits = _grid_header_hits(page_rows)
+        per_page[pno] = hits
+        for label, (x, estimated) in hits.items():
+            if not estimated:
+                collected.setdefault(label, []).append(x)
+    if not any(per_page.values()):
+        return {}
+    doc = {label: sorted(xs)[len(xs) // 2] for label, xs in collected.items()}
+
+    out = {}
+    for pno, hits in per_page.items():
+        if not hits:
+            continue
+        cols = {}
+        for label in GRID_HEADER_LABELS:
+            if label in hits and not hits[label][1]:
+                cols[label] = hits[label][0]
+            elif label in doc:
+                cols[label] = doc[label]
+            elif label in hits:
+                cols[label] = hits[label][0]
+        base = cols.get('月支俸額')
+        if base is None:
+            for label in ('職務加給', '學術研究', '應發合計'):
+                if label in cols:
+                    base = cols[label] - GRID_DEFAULT_OFFSET[label]
+                    break
+        if base is None:
+            continue
+        for label, off in GRID_DEFAULT_OFFSET.items():
+            cols.setdefault(label, base + off)
+        out[pno] = cols
+    return out
+
+
+def _grid_line_numbers(tokens, y, cols, y_tol, zero_lookalike=False):
+    """把同一行的數字依最近表頭欄歸位，回傳 {欄名: (數值, token)}。"""
+    labels = list(GRID_DEFAULT_OFFSET)
+    found = {}
+    for t in tokens:
+        if abs(t.get('y', 0) - y) > y_tol:
+            continue
+        value = _grid_num(t.get('text', ''), zero_lookalike)
+        if value is None:
+            continue
+        x = t['x'] - GRID_NUM_SHIFT
+        label = min(labels, key=lambda lb: abs(cols[lb] - x))
+        dist = abs(cols[label] - x)
+        if dist > 0.024:
+            continue
+        if label not in found or dist < found[label][2]:
+            found[label] = (value, t, dist)
+    return {label: (v, t) for label, (v, t, _) in found.items()}
+
+
+def _grid_name(tokens, y, cols):
+    """取第一行姓名欄的 2～4 字中文姓名（處理與員工編號或職稱黏在一起的情形）。"""
+    name_x = cols.get('員工姓名', cols['月支俸額'] - 0.113)
+    lo = cols.get('員工編號', name_x - 0.055) - 0.02
+    hi = cols.get('俸點', name_x + 0.05) - 0.02
+    best = None
+    for t in tokens:
+        if abs(t.get('y', 0) - y) > 0.008 or not lo <= t.get('x', 0) <= hi:
+            continue
+        for run in re.findall(r'[\u3400-\u4dbf\u4e00-\u9fff]{2,10}', t.get('text', '')):
+            pieces = [run] if len(run) <= 4 else [run[:3], run[:4]]
+            for piece in pieces:
+                if not _grid_is_name(piece):
+                    continue
+                score = float(t.get('conf', 0)) - abs(t['x'] - name_x)
+                if best is None or score > best[0]:
+                    best = (score, piece, float(t.get('conf', 0)))
+    return (best[1], best[2]) if best else ('', 0.0)
+
+
+def _grid_title(tokens, y, cols):
+    name_x = cols.get('員工姓名', cols['月支俸額'] - 0.113)
+    hi = cols.get('俸點', name_x + 0.05) - 0.02
+    parts = []
+    for t in tokens:
+        dy = t.get('y', 0) - y
+        text = norm_text(t.get('text', '')).strip('.。．,:：')
+        if 0.008 <= dy <= 0.024 and name_x - 0.05 <= t.get('x', 0) <= hi \
+                and text and _grid_num(text) is None:
+            parts.append((t['x'], text))
+    return ' '.join(text for _, text in sorted(parts))
+
+
+def _grid_anchor_ys(body, cols):
+    """人員第一行的 y：同列需有姓名、員工編號、帳號或月支俸額中至少兩項證據。"""
+    name_x = cols.get('員工姓名', cols['月支俸額'] - 0.113)
+    id_x = cols.get('員工編號', name_x - 0.055)
+    acct_x = cols.get('俸點', name_x + 0.05)
+    cands = []
+    for t in body:
+        x, text = t.get('x', 0), norm_text(t.get('text', ''))
+        if abs(x - id_x) <= 0.025 and re.search(r'\d{4,}', text) \
+                and len(re.sub(r'\D', '', text)) <= 8:
+            cands.append(t['y'])
+        elif abs(x - acct_x) <= 0.04 and len(re.sub(r'\D', '', text)) >= 9:
+            cands.append(t['y'])
+        elif abs(x - name_x) <= 0.035 and _grid_name([t], t['y'], cols)[0]:
+            cands.append(t['y'])
+        elif abs(x - GRID_NUM_SHIFT - cols['月支俸額']) <= 0.024:
+            v = _grid_num(text)
+            if v is not None and v >= 5000:
+                cands.append(t['y'])
+    cands.sort()
+    clusters = []
+    for y in cands:
+        if clusters and y - clusters[-1][-1] <= 0.008:
+            clusters[-1].append(y)
+        else:
+            clusters.append([y])
+    ys = [sum(c) / len(c) for c in clusters if len(c) >= 2]
+    starts = []
+    for y in ys:
+        # 第二行（職稱／俸點／特教津貼）距第一行約 0.015，不可當成新的人。
+        if not starts or y - starts[-1] > 0.024:
+            starts.append(y)
+    return starts
+
+
+def _grid_page_totals(tokens, cols, label_y):
+    first = _grid_line_numbers(tokens, label_y, cols, 0.008, zero_lookalike=True)
+    second = _grid_line_numbers(
+        [t for t in tokens if 0.008 < t['y'] - label_y <= 0.026],
+        label_y + 0.018, cols, 0.01, zero_lookalike=True)
+    totals = {}
+    for label, key1, key2 in GRID_COLUMNS:
+        if label in first:
+            totals[key1] = first[label][0]
+        if key2 and label in second:
+            totals[key2] = second[label][0]
+    if '應發合計' in first:
+        totals['應發金額'] = first['應發合計'][0]
+    return totals
+
+
+def _grid_parse_pages(rows):
+    pages = _page_groups(rows)
+    columns = _grid_columns(pages)
+    people, page_totals = [], {}
+    for pno in sorted(pages):
+        cols = columns.get(pno)
+        if not cols:
+            continue
+        tokens = [t for r in pages[pno] for t in r]
+        header_y = max((t['y'] for t in tokens if t['y'] < 0.25 and any(
+            lb in norm_text(t.get('text', '')) for lb in GRID_HEADER_LABELS)),
+            default=0.1)
+        total_labels = [t for t in tokens if t['y'] > header_y + 0.005
+                        and any(w in t.get('text', '') for w in GRID_TOTAL_WORDS)
+                        and t['x'] < cols['月支俸額']]
+        body_end = min((t['y'] for t in total_labels), default=0.98) - 0.008
+        body = [t for t in tokens if header_y + 0.005 < t['y'] < body_end]
+
+        page_label = next((t for t in sorted(total_labels, key=lambda t: t['y'])
+                           if '小計' in t.get('text', '')), None)
+        if page_label:
+            page_totals[pno] = _grid_page_totals(tokens, cols, page_label['y'])
+
+        for order, y in enumerate(_grid_anchor_ys(body, cols)):
+            name, name_conf = _grid_name(body, y, cols)
+            first = _grid_line_numbers(body, y, cols, 0.008)
+            second = _grid_line_numbers(
+                [t for t in body if 0.008 < t['y'] - y <= 0.024],
+                y + 0.015, cols, 0.009)
+            values, tokens_used = {}, {}
+            for label, key1, key2 in GRID_COLUMNS:
+                for key, line in ((key1, first), (key2, second)):
+                    if not key:
+                        continue
+                    hit = line.get(label)
+                    values[key] = hit[0] if hit else None
+                    if hit:
+                        tokens_used[key] = hit[1]
+            # 第二行月支俸額欄只會是特教津貼等小額，超過合理範圍即視為誤讀。
+            if values.get('_特教') and values['_特教'] >= 10000:
+                values['_特教'] = None
+            gross = first.get('應發合計')
+            deduct = first.get('應扣合計')
+            net = first.get('實發總額')
+            people.append({
+                '姓名': name, '_name_conf': name_conf,
+                '職稱': _grid_title(body, y, cols),
+                '_values': values, '_tokens': tokens_used,
+                '_gross': gross[0] if gross else None,
+                '_gross_tok': gross[1] if gross else None,
+                '_check': (deduct[0] + net[0]) if deduct and net else None,
+                '_page': pno, '_order': order,
+            })
+    return people, page_totals
+
+
+def _grid_sum(values):
+    return sum(values.get(k) or 0 for k in GRID_PAY_KEYS)
+
+
+def _grid_repair(people):
+    """
+    以印列的應發合計（或應扣合計＋實發總額）修復少數 OCR 誤讀，全部有算術證據：
+    1. 金額尾端黏到右框線多一個 1（357801 → 35780），去掉後加總恰好相符；
+    2. 單一欄漏讀，且差額正好是同份文件該欄已讀到過的金額。
+    """
+    observed = {k: {} for k in GRID_PAY_KEYS}
+    for p in people:
+        for k in GRID_PAY_KEYS:
+            v = p['_values'].get(k)
+            if v:
+                observed[k][v] = observed[k].get(v, 0) + 1
+
+    for p in people:
+        values = p['_values']
+        targets = [t for t in (p['_gross'], p['_check']) if t]
+        if not targets:
+            continue
+        target = p['_gross'] or p['_check']
+        if p['_gross'] and p['_check'] and p['_gross'] != p['_check']:
+            # 應發合計讀錯時，以應扣＋實發的組合為準（兩者需有一個等於項目加總）。
+            if _grid_sum(values) == p['_check']:
+                target = p['_check']
+        if _grid_sum(values) == target:
+            # 應發合計格讀錯，但應扣＋實發與項目加總一致時，以後者為準。
+            p['_gross'] = target if p['_gross'] else p['_gross']
+            continue
+
+        fixed = False
+        for k in GRID_PAY_KEYS:
+            v = values.get(k)
+            if v and str(v).endswith('1') and len(str(v)) >= 5:
+                trial = dict(values, **{k: v // 10})
+                if _grid_sum(trial) == target:
+                    values[k] = v // 10
+                    p['_repaired'] = True
+                    fixed = True
+                    break
+        if fixed:
+            continue
+
+        diff = target - _grid_sum(values)
+        if diff <= 0:
+            continue
+        options = [k for k in GRID_PAY_KEYS
+                   if not values.get(k) and diff in observed[k]]
+        if len(options) == 1:
+            values[options[0]] = diff
+            p['_repaired'] = True
+        if p['_gross'] is None and target:
+            p['_gross'] = target
+
+
+def grid_page_checks(tokens_or_rows):
+    """
+    驗證用：回傳每頁「解析人員加總 vs 印列本頁小計」比對結果。
+    不含姓名，只含頁碼、人數與各欄差額。
+    """
+    rows = tokens_or_rows
+    if rows and isinstance(rows[0], dict):
+        rows = group_rows(rows)
+    people, page_totals = _grid_parse_pages(rows)
+    _grid_repair(people)
+    out = []
+    for pno in sorted({p['_page'] for p in people} | set(page_totals)):
+        page_people = [p for p in people if p['_page'] == pno]
+        expected = page_totals.get(pno, {})
+        diffs = {}
+        for key, target in expected.items():
+            if key == '應發金額':
+                got = sum(p['_gross'] or _grid_sum(p['_values']) for p in page_people)
+            else:
+                got = sum(p['_values'].get(key) or 0 for p in page_people)
+            if got != target:
+                diffs[key] = target - got
+        out.append({'page': pno, 'people': len(page_people),
+                    'has_subtotal': bool(expected), 'diffs': diffs})
+    return out
+
+
+def parse_horizontal_grid(rows):
+    """解析「每人兩行、上下欄共用表頭」的橫式清冊。"""
+    people, _ = _grid_parse_pages(rows)
+    _grid_repair(people)
+
+    clean = []
+    for p in people:
+        v = p['_values']
+        g = lambda k: v.get(k) or 0
+        confs = [p['_name_conf'] if p['姓名'] else 0.0]
+        confs += [float(t.get('conf', 0)) for t in p['_tokens'].values()]
+        computed = _grid_sum(v)
+        # 應發合計格漏讀時，印列的「應扣合計＋實發總額」即等於應發合計。
+        gross = p['_gross'] or p['_check']
+        printed = bool(p['_gross_tok']) or bool(p['_check'])
+        if p['_gross_tok']:
+            confs.append(float(p['_gross_tok'].get('conf', 0)))
+        inferred = not gross or not printed
+        if p.get('_repaired') or inferred:
+            confs.append(0.3)
+        total = gross if gross else computed
+        clean.append({
+            '姓名': p['姓名'], '職稱': p['職稱'],
+            '身分證': '', '身分證有效': False,
+            '薪俸': g('薪俸'),
+            '主管加給': g('主管加給'),
+            '專業加給': g('專業加給') + g('_學術'),
+            '導師特教': g('_導師') + g('_特教'),
+            # 補發薪津、外縣市交通、輔導津貼、公保費不屬 AF 四欄，只參與驗算。
+            '其他加給': g('_補發') + g('_交通') + g('_輔導') + g('_公保'),
+            '應發金額': total,
+            '應發金額推算': inferred,
+            '加總相符': bool(total) and not inferred and total == computed,
+            '加總差額': (total - computed) if total else None,
+            '最低信心': round(min(confs), 3),
+        })
+    return clean
+
+
 def parse_row(row):
     """保留舊介面：單列橫式解析"""
     return parse_horizontal_row(row)
@@ -1047,6 +1508,8 @@ def _parse_as(rows, layout):
         return parse_vertical(rows)
     if _is_two_line_horizontal(rows):
         return parse_horizontal_two_line(rows)
+    if _is_grid_two_line(rows):
+        return parse_horizontal_grid(rows)
     return [p for p in (parse_horizontal_row(r) for r in rows) if p]
 
 
