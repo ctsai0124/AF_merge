@@ -2048,6 +2048,57 @@ def layout_variant(tokens):
     return code, LAYOUT_VARIANTS[code], traits
 
 
+# 可記憶的結構特徵代碼（各校樣式記憶與跨校歸類用；不含個資）
+STYLE_TRAITS = {
+    'has_summary_pages': '含總計表頁',
+    'skewed_header': '部分頁表頭歪斜',
+    'mixed_orientation': '直式／橫式混合頁',
+    'needs_tiled_ocr': '需 2×2 分塊辨識',
+    'needs_upscale_4x': '需 4 倍放大辨識',
+}
+OCR_STRATEGIES = ('full', 'tiled_2x2', 'upscale_4x')
+_TRAIT_FROM_LABEL = {v: k for k, v in STYLE_TRAITS.items()}
+
+
+def style_layout(style):
+    """版型代碼 → 解析器的直式／橫式候選。未知代碼回傳 None。"""
+    return {'vertical_column': 'vertical', 'horizontal_row': 'horizontal',
+            'horizontal_two_line': 'horizontal',
+            'horizontal_grid': 'horizontal'}.get(style)
+
+
+def style_profile(tokens, ocr_strategy='full'):
+    """
+    回傳可存入各校樣式記憶的結構描述：
+      {'style', 'style_label', 'traits', 'ocr_strategy'}
+    traits 只含 STYLE_TRAITS 代碼；不含姓名、金額、校名或頁數等單次資訊。
+    """
+    code, label, trait_labels = layout_variant(tokens)
+    traits = [_TRAIT_FROM_LABEL[t] for t in trait_labels if t in _TRAIT_FROM_LABEL]
+    if ocr_strategy == 'tiled_2x2':
+        traits.append('needs_tiled_ocr')
+    elif ocr_strategy == 'upscale_4x':
+        traits.append('needs_upscale_4x')
+    return {
+        'style': code,
+        'style_label': label,
+        'traits': sorted(set(traits)),
+        'ocr_strategy': ocr_strategy if ocr_strategy in OCR_STRATEGIES else 'full',
+    }
+
+
+def style_hint_layout(hint, fallback=None):
+    """
+    由該校樣式記憶推得的直式／橫式提示。提示格式不正確時回傳 fallback；
+    提示只作為候選評分加分，換版面時另一候選品質較好仍會勝出。
+    """
+    if isinstance(hint, dict):
+        lay = style_layout(hint.get('style'))
+        if lay:
+            return lay
+    return fallback
+
+
 def parse_tokens(tokens, preferred_layout=None):
     tokens = _unflip_pages(tokens)
     rows = group_rows(tokens)

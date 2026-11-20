@@ -501,5 +501,20 @@ class VerticalColumnHeaderTests(unittest.TestCase):
         self.assertIn('含總計表頁', traits)
         self.assertNotIn('王小明', desc + ''.join(traits))
 
+    def test_style_profile_and_hint(self):
+        prof = parse_tokens.style_profile(self.build(), 'tiled_2x2')
+        self.assertEqual(prof['style'], 'vertical_column')
+        self.assertIn('needs_tiled_ocr', prof['traits'])
+        self.assertEqual(prof['ocr_strategy'], 'tiled_2x2')
+        self.assertEqual(parse_tokens.style_hint_layout({'style': 'horizontal_grid'}), 'horizontal')
+        self.assertEqual(parse_tokens.style_hint_layout({'style': '??'}, 'vertical'), 'vertical')
+        self.assertIsNone(parse_tokens.style_hint_layout(None))
+
+    def test_stale_school_hint_does_not_override_structure(self):
+        # 該校記憶為橫式，但本次上傳的是直式清冊：仍須正確解析為直式
+        people, layout = parse_tokens.parse_tokens(self.build(), preferred_layout='horizontal')
+        self.assertEqual(layout, 'vertical')
+        self.check(people)
+
 if __name__ == '__main__':
     unittest.main()

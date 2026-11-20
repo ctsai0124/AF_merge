@@ -7,7 +7,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CFG = json.load(open(os.path.join(HERE, 'config.json'), encoding='utf-8'))
 SERVER, KEY = CFG['server'].rstrip('/'), CFG['key']
 POLL_MIN, POLL_MAX = 3, 60
-WORKER_VERSION = 'v18'
+WORKER_VERSION = 'v19'
 
 sys.path.insert(0, HERE)
 from parse_tokens import (
@@ -20,6 +20,8 @@ from parse_tokens import (
     merge_token_sets,
     ensemble_people,
     layout_variant,
+    style_profile,
+    style_hint_layout,
 )
 
 DIAG_DIR = os.path.join(HERE, 'diagnostics')
@@ -75,7 +77,7 @@ def save_diagnostics(tokens, job_id, layout):
     return path
 
 
-def ocr(pdf_bytes, preferred_layout=None, job_id=''):
+def ocr(pdf_bytes, preferred_layout=None, job_id='', style_hint=None):
     with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as f:
         f.write(pdf_bytes)
         pdf_path = f.name
@@ -96,9 +98,11 @@ def ocr(pdf_bytes, preferred_layout=None, job_id=''):
                     -sum(1 for p in found if _suspicious_name(p.get('姓名'))),
                     len(found))
 
+        strategy = 'full'
         tokens = recognize(3)
         rows = group_rows(tokens)
         if _is_two_line_horizontal(rows):
+            strategy = 'upscale_4x'
             # A3 雙行表在不同縮放倍率各有少數姓名／粗體金額失真。第二次
             # 只補進姓名、職稱與薪資項目欄，避免把薪俸起始列重複計數。
             standard = tokens
@@ -123,18 +127,35 @@ def ocr(pdf_bytes, preferred_layout=None, job_id=''):
                             and quality(tiled_people) > quality(people)):
                         print('  採用分塊補辨結果', flush=True)
                         tokens, people, layout = merged, tiled_people, tiled_layout
+                        strategy = 'tiled_2x2'
                     elif tiled_layout == layout:
                         # 其他版面：以人為單位合併，整頁已相符的列不受影響。
                         combined = ensemble_people(people, tiled_people)
                         if quality(combined) > quality(people):
                             print('  以分塊結果補強未相符／漏讀人員', flush=True)
                             people = combined
+                            strategy = 'tiled_2x2'
                 except Exception as e:
                     print(f'  分塊補辨失敗，沿用整頁結果：{e}', flush=True)
+        # 安全退回：該校記憶只是加分提示。若帶提示的結果仍有加總不符，
+        # 改用「不帶提示」的通用判斷重解析，品質較好就採用，避免舊記憶誤判換版面的學校。
+        if preferred_layout and any(not p.get('加總相符') for p in people):
+            alt_people, alt_layout = parse_all(tokens)
+            if quality(alt_people) > quality(people):
+                print(f'  該校記憶（{preferred_layout}）不適用本檔，已退回通用判斷：{alt_layout}',
+                      flush=True)
+                people, layout = alt_people, alt_layout
         print(f'  版面判定：{layout}', flush=True)
+        profile = None
         try:
             code, desc, traits = layout_variant(tokens)
             print(f'  版型特徵：{code}｜{desc}｜{"、".join(traits)}', flush=True)
+            profile = style_profile(tokens, strategy)
+            if isinstance(style_hint, dict) and style_hint.get('style'):
+                same = style_hint.get('style') == profile['style']
+                print('  與該校記憶樣式' + ('相同' if same else
+                      f'不同（記憶 {style_hint.get("style")} → 本次 {profile["style"]}），'
+                      '已依本次結構判斷'), flush=True)
         except Exception as e:      # 只供紀錄，失敗不影響辨識
             print(f'  版型特徵判讀失敗：{e}', flush=True)
         ok = sum(1 for p in people if p.get('加總相符'))
@@ -152,7 +173,7 @@ def ocr(pdf_bytes, preferred_layout=None, job_id=''):
             summary = layout_diagnostics(tokens)
             print(f'  ⚠ 已保存診斷：{diag_path}', flush=True)
             print(f'  雙版面診斷：{summary}', flush=True)
-        return people, layout
+        return people, layout, profile
     finally:
         os.unlink(pdf_path)
 
@@ -171,15 +192,19 @@ def main():
             continue
 
         jid = resp['job_id']
-        preferred = resp.get('layout_hint')
+        style_hint = resp.get('style_hint') if isinstance(resp.get('style_hint'), dict) else None
+        preferred = resp.get('layout_hint') or style_hint_layout(style_hint)
         hint_text = f'（該校記憶：{preferred}）' if preferred else ''
+        if style_hint and style_hint.get('style'):
+            hint_text += f'（樣式：{style_hint.get("style_label") or style_hint["style"]}）'
         print(f'領到工作 {jid}{hint_text}', flush=True)
         try:
-            people, layout = ocr(
-                base64.b64decode(resp['pdf_b64']), preferred, jid)
+            people, layout, profile = ocr(
+                base64.b64decode(resp['pdf_b64']), preferred, jid, style_hint)
             ok = sum(1 for p in people if p['加總相符'])
             print(f'  解析 {len(people)} 人，加總相符 {ok}', flush=True)
-            req('/ocr/result', {'job_id': jid, 'people': people, 'layout': layout})
+            req('/ocr/result', {'job_id': jid, 'people': people, 'layout': layout,
+                                'layout_profile': profile})
         except Exception as e:
             print(f'  辨識失敗：{e}', flush=True)
             req('/ocr/result', {'job_id': jid, 'error': str(e)[:300]})

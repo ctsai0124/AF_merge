@@ -22,8 +22,8 @@ app.config.update(
     SESSION_COOKIE_SAMESITE='Lax',  # 降低跨站請求偽造（CSRF）風險
 )
 
-APP_VERSION = 'v1.3.17'
-BUILD_VERSION = '2026.11.20.1'
+APP_VERSION = 'v1.3.18'
+BUILD_VERSION = '2026.11.20.2'
 
 
 def _is_sensitive_response(path):
@@ -383,18 +383,70 @@ def load_layout_profile(school=''):
     layout = p.get('layout')
     if layout not in ('vertical', 'horizontal'):
         layout = None
-    return {
+    out = {
         'layout': layout,
         'samples': int(p.get('samples', 0) or 0),
         'name_match_rate': float(p.get('name_match_rate', 0) or 0),
         'updated_at': int(p.get('updated_at', 0) or 0),
     }
+    out.update(clean_style_profile(p) or {})
+    return out
 
 
-def save_layout_profile(school, layout, name_match_rate):
-    """只在 OCR 姓名經 AF 驗證後，記住該校成功使用的版面。"""
+# ── 各校樣式記憶（版型代碼、結構特徵、OCR 策略；不含個資）──────
+STYLE_LABELS = {
+    'vertical_column': '直式一人一欄',
+    'horizontal_row': '橫式一人一列',
+    'horizontal_two_line': 'A3 橫式雙行',
+    'horizontal_grid': 'A4 橫式每人兩行共用表頭',
+}
+STYLE_LAYOUT = {'vertical_column': 'vertical', 'horizontal_row': 'horizontal',
+                'horizontal_two_line': 'horizontal', 'horizontal_grid': 'horizontal'}
+STYLE_TRAITS = ('has_summary_pages', 'skewed_header', 'mixed_orientation',
+                'needs_tiled_ocr', 'needs_upscale_4x')
+OCR_STRATEGIES = ('full', 'tiled_2x2', 'upscale_4x')
+
+
+def clean_style_profile(p):
+    """只保留白名單內的樣式欄位；格式不符回傳 None（舊資料只有 layout 時亦然）。"""
+    if not isinstance(p, dict) or p.get('style') not in STYLE_LABELS:
+        return None
+    traits = p.get('traits') if isinstance(p.get('traits'), list) else []
+    strategy = p.get('ocr_strategy')
+    return {
+        'style': p['style'],
+        'style_label': STYLE_LABELS[p['style']],
+        'traits': sorted({t for t in traits if t in STYLE_TRAITS}),
+        'ocr_strategy': strategy if strategy in OCR_STRATEGIES else 'full',
+    }
+
+
+def schools_by_style():
+    """跨校橫向歸類：{版型代碼: [學校鍵…]}；只含已記錄 style 的學校。"""
+    try:
+        with open(_layout_file(), encoding='utf-8') as f:
+            d = json.load(f)
+    except Exception:
+        d = {}
+    groups = {}
+    for school, p in sorted(d.items()):
+        prof = clean_style_profile(p)
+        if prof:
+            groups.setdefault(prof['style'], []).append(school)
+    return groups
+
+
+def save_layout_profile(school, layout, name_match_rate, style_profile=None):
+    """
+    只在 OCR 姓名經 AF 驗證後，記住該校成功使用的版面。
+    style_profile（版型代碼／結構特徵／OCR 策略）通過白名單且與 layout 一致時一併記錄；
+    舊記錄沒有這些欄位時保持原樣（向後相容）。
+    """
     if not school or layout not in ('vertical', 'horizontal'):
         return None
+    style = clean_style_profile(style_profile)
+    if style and STYLE_LAYOUT[style['style']] != layout:
+        style = None
     with _layout_lock:
         try:
             with open(_layout_file(), encoding='utf-8') as f:
@@ -402,12 +454,17 @@ def save_layout_profile(school, layout, name_match_rate):
         except Exception:
             d = {}
         prev = d.get(school, {})
-        d[school] = {
+        rec = {
             'layout': layout,
             'samples': int(prev.get('samples', 0) or 0) + 1,
             'name_match_rate': round(float(name_match_rate), 3),
             'updated_at': int(time.time()),
         }
+        if style:
+            rec.update(style)
+        elif clean_style_profile(prev) and STYLE_LAYOUT[prev['style']] == layout:
+            rec.update(clean_style_profile(prev))   # 本次未回報樣式：保留舊樣式
+        d[school] = rec
         try:
             with open(_layout_file(), 'w', encoding='utf-8') as f:
                 json.dump(d, f, ensure_ascii=False, indent=2)
@@ -1833,6 +1890,9 @@ def ocr_claim():
                                 'pdf_b64': base64.b64encode(j['pdf']).decode(),
                                 'school_key': skey,
                                 'layout_hint': profile.get('layout'),
+                                'style_hint': ({k: profile[k] for k in (
+                                    'style', 'style_label', 'traits', 'ocr_strategy')}
+                                    if profile.get('style') else None),
                                 'next_poll': POLL_ACTIVE})
     return jsonify({'job_id': None, 'next_poll': next_poll_sec()})
 
@@ -1856,6 +1916,7 @@ def ocr_result():
             j['people'] = d.get('people') or []
             layout = d.get('layout')
             j['layout'] = layout if layout in ('vertical', 'horizontal') else None
+            j['layout_profile'] = clean_style_profile(d.get('layout_profile'))
     return jsonify({'ok': True})
 
 
@@ -1868,6 +1929,7 @@ def ocr_status(job_id):
             return jsonify({'status': 'expired'}), 404
         st, people, err = j['status'], j['people'], j['error']
         layout = j.get('layout')
+        style_prof = j.get('layout_profile')
         af_bytes, af_name = j['af'], j['af_name']
 
     if st == 'need_review':
@@ -1905,7 +1967,7 @@ def ocr_status(job_id):
         )
         name_match_rate = name_matches / len(people) if people else 0
         if layout and len(people) >= 3 and name_match_rate >= 0.5:
-            save_layout_profile(skey, layout, name_match_rate)
+            save_layout_profile(skey, layout, name_match_rate, style_prof)
 
         af_names_set = {a['姓名'] for a in af_records}
         stats = merge_title_stats(paycheck.title_observations(good + need, af_names_set))
