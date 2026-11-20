@@ -7,7 +7,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CFG = json.load(open(os.path.join(HERE, 'config.json'), encoding='utf-8'))
 SERVER, KEY = CFG['server'].rstrip('/'), CFG['key']
 POLL_MIN, POLL_MAX = 3, 60
-WORKER_VERSION = 'v17'
+WORKER_VERSION = 'v18'
 
 sys.path.insert(0, HERE)
 from parse_tokens import (
@@ -19,6 +19,7 @@ from parse_tokens import (
     group_rows,
     merge_token_sets,
     ensemble_people,
+    layout_variant,
 )
 
 DIAG_DIR = os.path.join(HERE, 'diagnostics')
@@ -131,6 +132,11 @@ def ocr(pdf_bytes, preferred_layout=None, job_id=''):
                 except Exception as e:
                     print(f'  分塊補辨失敗，沿用整頁結果：{e}', flush=True)
         print(f'  版面判定：{layout}', flush=True)
+        try:
+            code, desc, traits = layout_variant(tokens)
+            print(f'  版型特徵：{code}｜{desc}｜{"、".join(traits)}', flush=True)
+        except Exception as e:      # 只供紀錄，失敗不影響辨識
+            print(f'  版型特徵判讀失敗：{e}', flush=True)
         ok = sum(1 for p in people if p.get('加總相符'))
         suspicious = sum(1 for p in people if _suspicious_name(p.get('姓名')))
         page_count = len({t.get('page') for t in tokens})

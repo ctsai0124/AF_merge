@@ -2004,6 +2004,50 @@ def ensemble_people(base, tiled):
     return out
 
 
+LAYOUT_VARIANTS = {
+    'horizontal_two_line': 'A3 橫式雙行（每人薪資／補助上下兩行）',
+    'horizontal_grid': 'A4 橫式每人兩行、上下欄共用表頭',
+    'vertical_column': '直式一人一欄（左側項目名稱，上方序號／身分證／姓名／職稱）',
+    'horizontal_row': '橫式一人一列',
+}
+
+
+def layout_variant(tokens):
+    """
+    以版面結構特徵命名清冊版型（不含姓名、金額、校名），供 worker 記錄與
+    人工速查「格式特徵庫」。只做描述，不影響解析結果。
+    回傳 (代碼, 中文說明, 附加特徵串列)。
+    """
+    rows = group_rows(_unflip_pages(tokens))
+    if _is_two_line_horizontal(rows):
+        code = 'horizontal_two_line'
+    elif _is_grid_two_line(rows):
+        code = 'horizontal_grid'
+    elif detect_layout(rows) == 'vertical':
+        code = 'vertical_column'
+    else:
+        code = 'horizontal_row'
+    pages = {}
+    for r in rows:
+        if r:
+            pages.setdefault(r[0]['page'], []).append(r)
+    traits = []
+    if code == 'vertical_column':
+        if any(_is_summary_page(pr) for pr in pages.values()):
+            traits.append('含總計表頁')
+        if any(_vertical_header_merged(pr[:12]) for pr in pages.values()):
+            traits.append('部分頁表頭歪斜')
+    kinds = set()
+    for pr in pages.values():
+        heads, fields, _ = _layout_evidence(pr)
+        if heads or fields:
+            kinds.add(detect_layout(pr))
+    if len(kinds) > 1:
+        traits.append('直式／橫式混合頁')
+    traits.append(f'{len(pages)} 頁有文字')
+    return code, LAYOUT_VARIANTS[code], traits
+
+
 def parse_tokens(tokens, preferred_layout=None):
     tokens = _unflip_pages(tokens)
     rows = group_rows(tokens)

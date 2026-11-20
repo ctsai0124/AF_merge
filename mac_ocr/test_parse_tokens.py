@@ -493,5 +493,13 @@ class VerticalColumnHeaderTests(unittest.TestCase):
         self.assertTrue(by['陳大同']['加總相符'])
         self.assertNotIn('李小華', [p['姓名'] for p in people if p['加總相符']])
 
+    def test_layout_variant_names_structure(self):
+        summary = [token('員工人數', 0.08, 0.15, 0), token('科室組別', 0.08, 0.12, 0),
+                   token('本俸', 0.08, 0.19, 0), token('264,660', 0.29, 0.19, 0)]
+        code, desc, traits = parse_tokens.layout_variant(summary + self.build(page=1))
+        self.assertEqual(code, 'vertical_column')
+        self.assertIn('含總計表頁', traits)
+        self.assertNotIn('王小明', desc + ''.join(traits))
+
 if __name__ == '__main__':
     unittest.main()
