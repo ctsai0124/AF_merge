@@ -36,8 +36,26 @@ FIELD_ALIAS = {
     '行政工作獎金': '其他加給',
     '工作津貼': '其他加給',
     '導師加給扣款': '扣款',          # 自應發金額中扣除
+    # 明正國小等清冊：事病假扣薪印為負數、補薪為正數，兩者都計入應發數合計。
+    '事病假扣薪': '其他加給',
+    '補薪': '其他加給',
+    '補發職務加給': '其他加給',
+    '補發導師費': '其他加給',
+    '特教加給差額': '其他加給',
     '應發數合計': '應發金額', '應發金額': '應發金額', '小計': '應發金額',
 }
+
+# 直式項目名稱中，代表「自應發扣除」的列；不論印成正數或負數都以負值計入。
+DEDUCT_LABELS = ('事病假扣薪',)
+
+# 掃描常見的形近誤讀，只用於比對列標題（例：「職務加紿」「地域加紿」）。
+_LABEL_FIX = str.maketrans({'紿': '給', '洽': '給', '絵': '給', '新': '薪'})
+
+# 直式總計表（依科室／職別彙總，非個人資料）的表頭標記；整頁跳過。
+SUMMARY_PAGE_LABELS = ('員工人數', '科室組別')
+
+# 直式表頭各列的列標題，用來偵測「表頭多列被併成同一列」的歪斜掃描。
+VERTICAL_HEADER_LABELS = ('序號', '身分證字號', '姓名', '職稱', '支薪俸級', '支新俸級')
 
 # 直式清冊若誤走橫式解析，這些項目名稱很容易被當成「姓名」。
 # 僅用於候選版面評分，不會直接刪除任何資料。
@@ -67,6 +85,27 @@ def valid_id(s):
     return tot % 10 == 0
 
 
+# 身分證字號首碼的掃描形近誤讀（例：E 讀成 B、英文 O 讀成數字 0）。
+_ID_FIRST_LOOKALIKE = {
+    # O／Q／D 三者檢查碼相同、無法以檢查碼區分，故數字 0 只還原為最常見的 O。
+    'B': 'E', 'E': 'BF', 'F': 'E', '8': 'B', '0': 'O',
+    '1': 'I', 'L': 'I', 'I': 'L', 'P': 'R', 'R': 'P', '5': 'S',
+}
+
+
+def repair_id(s):
+    """
+    檢查碼不符的身分證字號，只嘗試把「首碼」換成形近字母；恰好只有一個
+    替代字母能通過檢查碼時才採用，否則原樣回傳（不猜測數字部分）。
+    """
+    s = re.sub(r'\s', '', (s or '')).upper()
+    if len(s) != 10 or valid_id(s) or not s[1:].isdigit():
+        return s
+    fixes = [c + s[1:] for c in _ID_FIRST_LOOKALIKE.get(s[0], '')
+             if valid_id(c + s[1:])]
+    return fixes[0] if len(fixes) == 1 else s
+
+
 def looks_like_id(s):
     return bool(re.fullmatch(r'[A-Za-z][0-9]{9}', (s or '').strip()))
 
@@ -94,7 +133,7 @@ def is_num(s):
     # 只容許有限的邊緣雜訊，而且逗號必須符合千分位格式。
     # 例如「4,0001」通常是右側框線被讀成 1；不能直接去掉逗號變成 40001。
     match = re.fullmatch(
-        r'[~～LlI|<>＜＞]*(-?[\d,]+?)[._,\-/|()（）\[\]［］{}]*',
+        r'[~～LlI|<>＜＞•]*(-?[\d,]+?)[._,\-/|()（）\[\]［］{}]*',
         norm_text(s))
     if not match:
         return False
@@ -171,7 +210,7 @@ def merge_number_fragments(row):
 
     NUMISH = re.compile(r'^-?[\d,]+$')
     # 尾段可能夾帶多餘標點（例：「690.」），比對時允許結尾有分隔字元
-    THREE = re.compile(r'^\d{3}[,\-/|()（）\[\]［］]*$')
+    THREE = re.compile(r'^\d{3}[,\-/|()（）\[\]［］_]*$')
     MAX_GAP = 0.06                      # 仍遠小於典型欄距
 
     body = [dict(t) for t in row[1:]]
@@ -341,15 +380,172 @@ def _row_label(r):
     合併後再查表；已知項目或合併後仍未知時，維持原本只看第一個 token。
     """
     first = (r[0]['text'] or '').strip() if r else ''
+    if first not in FIELD_ALIAS:
+        # 形近字（紿→給）或黏到框線的尾端數字（「補發導師費18」）
+        fixed = re.sub(r'\d+$', '', first.translate(_LABEL_FIX))
+        if fixed in FIELD_ALIAS:
+            first = fixed
     if first in FIELD_ALIAS or len(r) < 2:
         return first
-    second = (r[1]['text'] or '').strip()
+    second = (r[1]['text'] or '').strip().translate(_LABEL_FIX)
     if (second and len(second) <= 4 and not is_num(second)
             and all('\u4e00' <= ch <= '\u9fff' for ch in second)
             and abs(r[1]['x'] - r[0]['x']) < 0.05
             and first + second in FIELD_ALIAS):
         return first + second
     return first
+
+
+def _is_summary_page(page_rows):
+    """
+    直式「總計表」依科室／職別彙總（列標題含「員工人數」「科室組別」），
+    欄位是職別而非個人，也沒有身分證字號；不可當成人員解析。
+    """
+    labels = {(r[0].get('text') or '').strip() for r in page_rows if r}
+    if not labels & set(SUMMARY_PAGE_LABELS):
+        return False
+    return not any(looks_like_id((t.get('text') or '').strip())
+                   for r in page_rows for t in r)
+
+
+def _vertical_header_rows_ok(header_rows, n_people):
+    """標準逐列解析的姓名列是否恰好每位人員一個姓名（可直接信任）。"""
+    for r in header_rows:
+        if r and (r[0].get('text') or '').strip() == '姓名':
+            got = [t for t in r[1:] if is_name((t.get('text') or '').strip())
+                   and not _suspicious_name(t.get('text'))
+                   and not any(w in t['text'] for w in SKIP_WORDS)]
+            return len(got) == n_people
+    return False
+
+
+def _vertical_header_merged(header_rows):
+    """表頭多列（序號／身分證／姓名／職稱）因掃描歪斜被併成同一列。"""
+    for r in header_rows:
+        labels = {(t.get('text') or '').strip() for t in r
+                  if t.get('x', 1) < 0.16}
+        if len(labels & set(VERTICAL_HEADER_LABELS)) >= 2:
+            return True
+    return False
+
+
+def _vertical_header_columns(rows, base_idx, num_xs):
+    """
+    逐欄解析直式表頭：不依賴「同一列」分組，而以金額欄（靠右對齊）切出
+    每人的欄位範圍，再於欄內由上而下找身分證字號、姓名、職稱。
+
+    用於職稱折成多行、各欄表頭上下錯位，導致序號／身分證／姓名／職稱
+    被併成同一列的掃描清冊（例：「薦任七等功六級（590）」三行職稱）。
+    需有「小計／合計」表頭界定人員欄的右界，且每一人員欄都恰好讀到
+    一個姓名，否則回傳空串列，沿用原本的逐列解析。
+    """
+    header = [t for r in rows[:base_idx] for t in r]
+    # 直式表頭的列標題一律在最左欄；不在左欄者是橫式表頭，不適用。
+    labels = [t for t in header
+              if (t.get('text') or '').strip() in VERTICAL_HEADER_LABELS
+              and t.get('x', 1) < 0.16]
+    if not num_xs or not any(t['text'].strip() == '姓名' for t in labels):
+        return []
+    totals = [t['x'] for t in header
+              if (t.get('text') or '').strip() in ('小計', '合計', '總計')]
+    if not totals:
+        return []
+    right = min(totals)
+    person_xs = [x for x in num_xs if x < right]
+    if not person_xs:
+        return []
+    top = min(t['y'] for t in labels) - 0.012
+    left = max(t['x'] for t in labels) + 0.02
+    name_label_y = next((t['y'] for t in labels
+                         if (t.get('text') or '').strip() == '姓名'), None)
+    out = []
+    for i, nx in enumerate(person_xs):
+        lo = person_xs[i - 1] if i else left
+        cell = sorted((t for t in header
+                       if lo < t['x'] < nx and t['y'] >= top
+                       and (t.get('text') or '').strip()
+                       not in VERTICAL_HEADER_LABELS),
+                      key=lambda t: t['y'])
+        ids = [t for t in cell if looks_like_id(repair_id(t.get('text')))]
+        if len(ids) > 1:
+            return []            # 一個金額欄內有兩人：該列金額漏讀，欄界不可信
+        pid = ids[0] if ids else None
+        cands = [t for t in cell
+                 if is_name((t.get('text') or '').strip())
+                 and not _suspicious_name(t.get('text'))
+                 and not any(w in t['text'] for w in SKIP_WORDS)]
+        if pid is not None:
+            after = [t for t in cands if t['y'] > pid['y'] - 0.002]
+            name = after[0] if after else None
+        elif name_label_y is not None and cands:
+            near = [t for t in cands if abs(t['y'] - name_label_y) <= 0.012]
+            if len(near) > 1:
+                return []
+            name = min(cands, key=lambda t: abs(t['y'] - name_label_y))
+        else:
+            name = None
+        if name is None:
+            return []
+        title = next((t for t in cell
+                      if t['y'] > name['y'] + 0.002
+                      and not is_num(t['text'])
+                      and re.search(r'[\u4e00-\u9fff]', t['text'])
+                      and not re.fullmatch(r'[\d（）()\s]+', t['text'])), None)
+        entry = {'姓名': name['text'].strip(), 'x': name['x'],
+                 '_conf': [name['conf']]}
+        if pid is not None:
+            entry['身分證'] = pid['text'].strip()
+            entry['_conf'].append(pid['conf'])
+        if title is not None:
+            entry['職稱'] = title['text'].strip()
+        out.append(entry)
+    return out
+
+
+def _geometric_columns(names, rows, base_idx):
+    """
+    以所有主要金額列（本俸／專業加給／應發）的金額 x 座標分群，為每個
+    姓名取「姓名右側最近」的金額欄。必須一人一欄、彼此不重複，且所有
+    主要金額列中多數人都有讀到金額，否則回傳 None 沿用依序配對。
+    """
+    xs = []
+    used_rows = 0
+    for r in rows[base_idx:]:
+        if FIELD_ALIAS.get(_row_label(r)) not in ('薪俸', '專業加給', '應發金額'):
+            continue
+        vals = [t['x'] for t in r[1:] if is_num(t.get('text', ''))
+                and abs(to_int(t.get('text', ''))) >= 1000]
+        if vals:
+            used_rows += 1
+            xs.extend(vals)
+    if used_rows < 2 or not names:
+        return None
+    xs.sort()
+    clusters = []
+    for x in xs:
+        if clusters and x - clusters[-1][-1] <= 0.02:
+            clusters[-1].append(x)
+        else:
+            clusters.append([x])
+    # 只採至少兩列都出現的欄，避免單一雜訊 token 自成一欄
+    centers = [sum(c) / len(c) for c in clusters if len(c) >= 2]
+    out = []
+    for i, n in enumerate(names):
+        right = [c for c in centers if c > n['x'] + 0.005]
+        nxt = names[i + 1]['x'] if i + 1 < len(names) else None
+        if right and (nxt is None or right[0] <= nxt + 0.04):
+            out.append(right[0])
+        else:
+            out.append(None)     # 此人主要金額全數漏讀：不可借用隔壁欄
+    found = [x - n['x'] for x, n in zip(out, names) if x is not None]
+    if not found:
+        return None
+    found.sort()
+    offset = found[len(found) // 2]
+    out = [x if x is not None else n['x'] + offset for x, n in zip(out, names)]
+    if len(set(out)) != len(out):
+        return None
+    return out
 
 
 def _vertical_block(rows):
@@ -446,6 +642,30 @@ def _vertical_block(rows):
         ref = base_row
 
     num_xs = sorted(t['x'] for t in money_tokens(ref))
+    # 逐欄表頭解析用「金額最多」的主要金額列界定欄位，避免應發列有斷字。
+    col_ref = max((r for r in rows
+                   if FIELD_ALIAS.get(_row_label(r)) in ('薪俸', '應發金額',
+                                                         '專業加給')),
+                  key=lambda r: len(money_tokens(r)), default=ref)
+    col_xs = sorted(t['x'] for t in money_tokens(col_ref))
+    colwise = _vertical_header_columns(rows, base_idx, col_xs)
+    use_colwise = bool(colwise) and (
+        _vertical_header_merged(rows[:base_idx])
+        or (len(names) != len(colwise)
+            and not _vertical_header_rows_ok(rows[:base_idx], len(colwise))))
+    if use_colwise:
+        names = colwise
+        num_xs = col_xs
+    # 只有在依序配對「明顯錯位」（某人的金額欄已越過下一人的姓名）時，
+    # 才改用幾何配對；一般情形維持原本依序配對。
+    crossed = any(num_xs[i] > names[i + 1]['x'] + 0.01
+                  for i in range(min(len(names) - 1, len(num_xs))))
+    geo = _geometric_columns(names, rows, base_idx) if crossed else None
+    if geo is not None and geo != num_xs[:len(names)]:
+        # 參考列缺了某人的金額（斷字、漏讀）時，依序配對會讓後面的人整批
+        # 錯位到隔壁或小計欄；改依幾何位置配對（金額靠右、姓名靠左，
+        # 每人的金額欄是姓名右側最近的金額欄）。
+        num_xs = geo
     if len(num_xs) < len(names):
         names = names[:len(num_xs)]
     # 小計／合計位於最右側，取左起與人數相同的欄位即可
@@ -489,7 +709,9 @@ def _vertical_block(rows):
     # 表頭的「職稱」也可能被讀成「成稱／E稱」；在姓名列與本俸列之間，
     # 排除俸級數字後，依 x 座標把文字配回各人。
     title_row = first_row(lambda s: s == '職稱')
-    if title_row:
+    if use_colwise:
+        pass                      # 職稱／身分證已由逐欄表頭解析取得
+    elif title_row:
         assign_text(title_row, '職稱')
     else:
         for r in rows:
@@ -539,14 +761,27 @@ def _vertical_block(rows):
     for r in rows:
         label = _row_label(r)
         if label == '身分證字號':
-            assign_text(r, '身分證')
+            if not use_colwise:
+                assign_text(r, '身分證')
+        elif FIELD_ALIAS.get(label) == '其他加給':
+            # 教保費、行政工作獎金、事病假扣薪、補薪等可能同時出現；各自保存
+            # 再加總，避免同一人的多個「其他」項目互相覆蓋。
+            assign_num(r, '_x_' + label)
         elif label in FIELD_ALIAS:
             assign_num(r, FIELD_ALIAS[label])
+    for c in cols:
+        for lab in DEDUCT_LABELS:
+            if '_x_' + lab in c:
+                c['_x_' + lab] = -abs(c['_x_' + lab])
+
+    def other(c):
+        return c.get('其他加給', 0) + sum(
+            v for k, v in c.items() if k.startswith('_x_'))
 
     def comp_sum(c):
         return (c.get('薪俸', 0) + c.get('主管加給', 0) + c.get('專業加給', 0)
                 + c.get('導師費', 0) + c.get('特教加給', 0)
-                + c.get('地域加給', 0) + c.get('其他加給', 0) - c.get('扣款', 0))
+                + c.get('地域加給', 0) + other(c) - c.get('扣款', 0))
 
     # 找不到「應發數合計」標籤時（標籤列被標題文字擠掉），改以算術證明：
     # 取「多數人該列數值恰等於各項加總」的那一列作為應發金額。不猜位置。
@@ -578,16 +813,17 @@ def _vertical_block(rows):
             continue
         duty = c.get('導師費', 0) + c.get('特教加給', 0)
         s = (pay + c.get('主管加給', 0) + c.get('專業加給', 0) + duty
-             + c.get('地域加給', 0) + c.get('其他加給', 0) - c.get('扣款', 0))
+             + c.get('地域加給', 0) + other(c) - c.get('扣款', 0))
         total = c.get('應發金額', 0)
-        extra = c.get('地域加給', 0) + c.get('其他加給', 0) - c.get('扣款', 0)
+        extra = c.get('地域加給', 0) + other(c) - c.get('扣款', 0)
         if total and extra and s != total and s - extra == total:
             # 地域／其他列誤收了鄰列數字：不含這些項目時恰等於印列應發，
             # 以算術證明剔除，不猜測金額。
-            for k in ('地域加給', '其他加給', '扣款'):
+            for k in ['地域加給', '其他加給', '扣款'] + [
+                    k for k in c if k.startswith('_x_')]:
                 c.pop(k, None)
             s = total
-        pid = (c.get('身分證') or '').upper()
+        pid = repair_id(c.get('身分證'))
         out.append({
             '姓名': c['姓名'], '職稱': c.get('職稱', ''),
             '身分證': pid if looks_like_id(pid) else '',
@@ -596,7 +832,7 @@ def _vertical_block(rows):
             '專業加給': c.get('專業加給', 0), '導師特教': duty,
             # 地域加給、導師加給扣款等不屬 AF 四欄，但計入應發；併入「其他加給」
             # 讓伺服器端 from_ocr 用同一條等式驗算，避免已相符的列被誤送人工確認。
-            '其他加給': (c.get('地域加給', 0) + c.get('其他加給', 0)
+            '其他加給': (c.get('地域加給', 0) + other(c)
                      - c.get('扣款', 0)),
             '應發金額': total,
             '加總相符': (total > 0 and s == total),
@@ -618,6 +854,8 @@ def parse_vertical(rows):
     out = []
     for pno in sorted(pages):
         page_rows = pages[pno]
+        if _is_summary_page(page_rows):
+            continue
         starts = [i for i, r in enumerate(page_rows)
                   if (r[0]['text'] or '').strip() == '姓名' and len(r) > 1]
         if len(starts) <= 1:

@@ -355,5 +355,143 @@ class VerticalRobustnessTests(unittest.TestCase):
             {'姓名': '王小明', '應發金額': 0}, {'姓名': '王小明', '應發金額': 100}])
         self.assertEqual([k['姓名'] for k in kept], ['王小明', '王小明'])
 
+
+def fake_id(letter, body8):
+    """以檢查碼產生虛構但格式正確的身分證字號（測試用，非真實證號）。"""
+    for d in range(10):
+        cand = f'{letter}{body8}{d}'
+        if parse_tokens.valid_id(cand):
+            return cand
+    raise AssertionError('no checksum digit')
+
+
+class VerticalColumnHeaderTests(unittest.TestCase):
+    """直式一人一欄清冊（明正國小樣式）：表頭歪斜、多行職稱、總計表頁、扣薪列。"""
+
+    COLS = (0.29, 0.42, 0.55)       # 各人金額欄（靠右）
+    NAME_X = (0.23, 0.36, 0.49)     # 各人姓名欄（靠左）
+
+    def people(self):
+        return [
+            dict(name='王小明', id=fake_id('E', '12345678'), title='幹事',
+                 pay=44970, prof=26830, duty=0, other=(), total=71800),
+            dict(name='李小華', id=fake_id('S', '22345678'), title='教保員',
+                 pay=48305, prof=0, duty=0, other=(('教保費', 3000),
+                                                    ('事病假扣薪', -805)),
+                 total=50500),
+            dict(name='陳大同', id=fake_id('T', '12233445'), title='組長兼教師',
+                 pay=55690, prof=35780, duty=5930, other=(), total=97400),
+        ]
+
+    def build(self, skew=False, page=0, duty_label='職務加給',
+              id_override=None):
+        ppl = self.people()
+        t = [token('某某國小員工每月薪津發放清冊', 0.5, 0.06, page),
+             token('序號', 0.08, 0.10, page), token('身分證字號', 0.11, 0.12, page),
+             token('姓名', 0.08, 0.14, page), token('職稱', 0.08, 0.16, page),
+             token('支薪俸級', 0.10, 0.175, page), token('小計', 0.90, 0.14, page)]
+        for i, p in enumerate(ppl):
+            dy = -0.008 if (skew and i == 0) else 0.0
+            pid = (id_override or {}).get(i, p['id'])
+            t += [token(str(i + 1), self.NAME_X[i] - 0.02, 0.10 + dy, page),
+                  token(pid, self.NAME_X[i] + 0.01, 0.12 + dy, page),
+                  token(p['name'], self.NAME_X[i], 0.14 + dy, page),
+                  token(p['title'], self.NAME_X[i], 0.155 + dy, page)]
+            if skew and i == 0:
+                t.append(token('薦任七等功六級', self.NAME_X[i] + 0.02, 0.165 + dy, page))
+        rows = [('本俸', 0.19, 'pay'), ('專業加給', 0.21, 'prof'),
+                (duty_label, 0.23, 'duty'), ('應發數合計', 0.43, 'total')]
+        for label, y, key in rows:
+            t.append(token(label, 0.09, y, page))
+            for i, p in enumerate(ppl):
+                if p[key]:
+                    t.append(token(f'{p[key]:,}', self.COLS[i], y, page))
+            t.append(token(f'{sum(p[key] for p in ppl):,}', 0.92, y, page))
+        for j, label in enumerate(('教保費', '事病假扣薪')):
+            y = 0.29 + 0.02 * j
+            t.append(token(label, 0.09, y, page))
+            for i, p in enumerate(ppl):
+                for lab, v in p['other']:
+                    if lab == label:
+                        t.append(token(f'{v:,}', self.COLS[i], y, page))
+        return t
+
+    def check(self, people):
+        want = {p['name']: p for p in self.people()}
+        self.assertEqual(sorted(p['姓名'] for p in people), sorted(want))
+        for p in people:
+            w = want[p['姓名']]
+            self.assertEqual(p['薪俸'], w['pay'], p['姓名'])
+            self.assertEqual(p['專業加給'], w['prof'], p['姓名'])
+            self.assertEqual(p['主管加給'], w['duty'], p['姓名'])
+            self.assertEqual(p['應發金額'], w['total'], p['姓名'])
+            self.assertTrue(p['加總相符'], p['姓名'])
+            self.assertEqual(p['身分證'], w['id'])
+            self.assertTrue(p['身分證有效'])
+
+    def test_plain_page(self):
+        people, layout = parse_tokens.parse_tokens(self.build())
+        self.assertEqual(layout, 'vertical')
+        self.check(people)
+
+    def test_skewed_header_with_wrapped_title(self):
+        # 第一欄多一行職稱而整欄上移，表頭各列被併成同一列
+        people, _ = parse_tokens.parse_tokens(self.build(skew=True))
+        self.check(people)
+        first = next(p for p in people if p['姓名'] == '王小明')
+        self.assertEqual(first['職稱'], '幹事')
+
+    def test_misread_label_glyph(self):
+        people, _ = parse_tokens.parse_tokens(self.build(duty_label='職務加紿'))
+        self.check(people)
+
+    def test_leave_deduction_and_other_allowance_both_counted(self):
+        people, _ = parse_tokens.parse_tokens(self.build())
+        p = next(p for p in people if p['姓名'] == '李小華')
+        self.assertEqual(p['其他加給'], 3000 - 805)
+
+    def test_summary_page_is_skipped(self):
+        summary = [token('某某國小員工每月薪津發放清冊（總計表）', 0.5, 0.06, 0),
+                   token('序號', 0.08, 0.10, 0), token('科室組別', 0.08, 0.12, 0),
+                   token('1', 0.2, 0.10, 0), token('教師', 0.22, 0.12, 0),
+                   token('2', 0.33, 0.10, 0), token('職員', 0.35, 0.12, 0),
+                   token('員工人數', 0.08, 0.15, 0), token('5', 0.29, 0.15, 0),
+                   token('本俸', 0.08, 0.19, 0), token('264,660', 0.29, 0.19, 0),
+                   token('224,850', 0.42, 0.19, 0),
+                   token('專業加給', 0.09, 0.21, 0), token('173,260', 0.29, 0.21, 0),
+                   token('133,250', 0.42, 0.21, 0),
+                   token('應發數合計', 0.09, 0.43, 0), token('437,920', 0.29, 0.43, 0),
+                   token('358,100', 0.42, 0.43, 0)]
+        people, _ = parse_tokens.parse_tokens(summary + self.build(page=1))
+        self.check(people)
+
+    def test_id_first_letter_repaired_by_checksum(self):
+        good = self.people()
+        bad_e = 'B' + good[0]['id'][1:]           # E 讀成 B
+        people, _ = parse_tokens.parse_tokens(self.build(id_override={0: bad_e}))
+        self.check(people)
+        self.assertEqual(parse_tokens.repair_id('0' + fake_id('O', '20016148')[1:]),
+                         fake_id('O', '20016148'))
+        # 無法唯一還原者原樣保留
+        self.assertEqual(parse_tokens.repair_id('A123'), 'A123')
+
+    def test_split_total_does_not_shift_people_into_subtotal(self):
+        toks = self.build()
+        # 第二人的應發數合計被拆成「50,」「500_」兩段
+        toks = [t for t in toks if not (t['text'] == '50,500')]
+        toks += [token('50,', 0.40, 0.43), token('500_', 0.425, 0.43)]
+        people, _ = parse_tokens.parse_tokens(toks)
+        self.check(people)
+
+    def test_missing_total_keeps_columns_aligned(self):
+        # 第二人的應發與本俸都漏讀：其他人不可整批錯位到小計欄
+        toks = [t for t in self.build() if t['text'] not in ('50,500', '48,305')]
+        people, _ = parse_tokens.parse_tokens(toks)
+        by = {p['姓名']: p for p in people}
+        self.assertEqual(by['陳大同']['薪俸'], 55690)
+        self.assertEqual(by['陳大同']['應發金額'], 97400)
+        self.assertTrue(by['陳大同']['加總相符'])
+        self.assertNotIn('李小華', [p['姓名'] for p in people if p['加總相符']])
+
 if __name__ == '__main__':
     unittest.main()
