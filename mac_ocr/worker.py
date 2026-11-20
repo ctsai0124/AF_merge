@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """薪資清冊 OCR 工作程式：輪詢伺服器、辨識、回傳"""
-import json, os, subprocess, sys, tempfile, time, base64
+import json, os, re, subprocess, sys, tempfile, time, base64
 import urllib.request, urllib.error
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CFG = json.load(open(os.path.join(HERE, 'config.json'), encoding='utf-8'))
 SERVER, KEY = CFG['server'].rstrip('/'), CFG['key']
 POLL_MIN, POLL_MAX = 3, 60
-WORKER_VERSION = 'v19'
+WORKER_VERSION = 'v20'
 
 sys.path.insert(0, HERE)
 from parse_tokens import (
@@ -26,6 +26,22 @@ from parse_tokens import (
 
 DIAG_DIR = os.path.join(HERE, 'diagnostics')
 DIAG_KEEP = 10
+TITLE_RE = re.compile(r'國民|國小|國中|中學|小學|學校|高中|高職')
+
+
+def title_texts(tokens, limit=10):
+    """各頁頂端（上方 15%）或含「清冊」字樣、且含學校字樣的標題文字，供伺服器以
+    校名對回機關代碼。只在伺服器記憶體中使用，不寫入記錄檔或記憶檔。"""
+    out = []
+    for t in sorted(tokens, key=lambda t: (t.get('page', 0), t.get('y', 1))):
+        text = (t.get('text') or '').strip()
+        top = t.get('y', 1) < 0.15 or '清冊' in text      # 旋轉頁的標題不在頂端
+        if top and len(text) >= 4 and TITLE_RE.search(text):
+            if text[:80] not in out:
+                out.append(text[:80])
+        if len(out) >= limit:
+            break
+    return out
 
 
 def req(path, data=None, timeout=60):
@@ -173,7 +189,7 @@ def ocr(pdf_bytes, preferred_layout=None, job_id='', style_hint=None):
             summary = layout_diagnostics(tokens)
             print(f'  ⚠ 已保存診斷：{diag_path}', flush=True)
             print(f'  雙版面診斷：{summary}', flush=True)
-        return people, layout, profile
+        return people, layout, profile, title_texts(tokens)
     finally:
         os.unlink(pdf_path)
 
@@ -199,12 +215,12 @@ def main():
             hint_text += f'（樣式：{style_hint.get("style_label") or style_hint["style"]}）'
         print(f'領到工作 {jid}{hint_text}', flush=True)
         try:
-            people, layout, profile = ocr(
+            people, layout, profile, titles = ocr(
                 base64.b64decode(resp['pdf_b64']), preferred, jid, style_hint)
             ok = sum(1 for p in people if p['加總相符'])
             print(f'  解析 {len(people)} 人，加總相符 {ok}', flush=True)
             req('/ocr/result', {'job_id': jid, 'people': people, 'layout': layout,
-                                'layout_profile': profile})
+                                'layout_profile': profile, 'title_texts': titles})
         except Exception as e:
             print(f'  辨識失敗：{e}', flush=True)
             req('/ocr/result', {'job_id': jid, 'error': str(e)[:300]})

@@ -9,3 +9,5 @@ layout_profiles.json
 .DS_Store
 *.bak-*
 exclusions.json
+school_fingerprints.json
+.school_fp_secret

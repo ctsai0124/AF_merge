@@ -22,8 +22,8 @@ app.config.update(
     SESSION_COOKIE_SAMESITE='Lax',  # 降低跨站請求偽造（CSRF）風險
 )
 
-APP_VERSION = 'v1.3.18'
-BUILD_VERSION = '2026.11.20.2'
+APP_VERSION = 'v1.3.19'
+BUILD_VERSION = '2026.11.21.1'
 
 
 def _is_sensitive_response(path):
@@ -126,6 +126,7 @@ ROSTER_SEQUENCE_COLS = (
 
 # ── PDF 比對：見 paycheck.py ──
 import paycheck
+import school_identity as SID
 import threading, time
 
 # ── OCR 工作佇列（供 Mac 端 Vision 辨識使用）──────────────
@@ -186,13 +187,14 @@ def _ex_file():
     return os.path.join(base, 'exclusions.json')
 
 
-def load_exclusions(school=''):
+def load_exclusions(school='', legacy_keys=()):
     try:
         with open(_ex_file(), encoding='utf-8') as f:
             d = json.load(f)
     except Exception:
         d = {}
-    e = d.get(school or '_default', {})
+    # 新學校鍵查不到時，退回舊版以檔名切出的鍵（向後相容）
+    e = SID.pick(d, school or '_default', legacy_keys)[1] or {}
     # 舊版本可能曾把正式職稱寫入設定；讀取時也要阻擋，避免繼續沿用。
     titles = [t for t in e.get('titles', [])
               if not paycheck.is_formal_title(t)]
@@ -200,14 +202,14 @@ def load_exclusions(school=''):
             'use_default': e.get('use_default', True)}
 
 
-def save_exclusions(school, titles, names, use_default=None):
+def save_exclusions(school, titles, names, use_default=None, legacy_keys=()):
     with _ex_lock:
         try:
             with open(_ex_file(), encoding='utf-8') as f:
                 d = json.load(f)
         except Exception:
             d = {}
-        prev = d.get(school or '_default', {})
+        prev = SID.pick(d, school or '_default', legacy_keys)[1] or {}
         safe_titles = {
             t.strip() for t in titles
             if t.strip() and not paycheck.is_formal_title(t.strip())
@@ -225,9 +227,80 @@ def save_exclusions(school, titles, names, use_default=None):
         return d[school or '_default']
 
 
-def school_key(af_name):
-    sn1, _ = parse_af_filename(af_name or '')
-    return sn1 or (af_name or '_default')
+# ── 學校鍵：以機關代碼／學校名稱為單位，不被改過的檔名搞混 ──────────
+# 判定順序見 school_identity.py：AF 內容代碼 → 檔名代碼 → AF 內容校名 →
+# 清冊標題校名 → AF 人員組成指紋 → 清掉「複本」等雜訊的檔名。
+_school_table_cache = {'mtime': None, 'rows': []}
+
+
+def _data_dir():
+    base = os.environ.get('DATA_DIR', '').strip() or app.root_path
+    try:
+        os.makedirs(base, exist_ok=True)
+    except Exception:
+        base = tempfile.gettempdir()
+    return base
+
+
+def school_table():
+    """[(機關代碼, 學校全名)]，取自 static/school.xlsx（依檔案時間快取）。"""
+    path = os.path.join(app.root_path, 'static', 'school.xlsx')
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return []
+    if _school_table_cache['mtime'] != mtime:
+        df = load_school_df()
+        rows = [(str(c).strip().upper(), str(n).strip())
+                for c, n in zip(df.get('sn1', []), df.get('school', []))
+                if str(c).strip() and str(n).strip() and str(c) != 'nan']
+        _school_table_cache.update(mtime=mtime, rows=rows)
+    return _school_table_cache['rows']
+
+
+def resolve_school(af_name, af_bytes=None, pdf_texts=None, content=None):
+    try:
+        return SID.resolve(af_name or '', af_bytes, school_table(), pdf_texts,
+                           _data_dir(), content)
+    except Exception:
+        app.logger.exception('學校鍵判定失敗，改用檔名')
+        return {'key': SID.clean_filename(af_name), 'source': 'filename',
+                'school_name': '', 'legacy_keys': [SID.legacy_key(af_name)], 'ids': []}
+
+
+def school_key(af_name, af_bytes=None, pdf_texts=None):
+    return resolve_school(af_name, af_bytes, pdf_texts)['key']
+
+
+def remember_school(ident, verified=False):
+    """代碼來自 AF 本身時直接記指紋；來自清冊標題時須經 AF 姓名驗證。"""
+    if not ident or ident.get('source') not in SID.STRONG_SOURCES:
+        return False
+    if ident['source'] == 'pdf_name' and not verified:
+        return False
+    try:
+        return SID.remember_fingerprint(ident['key'], ident.get('ids') or [], _data_dir())
+    except Exception as e:
+        app.logger.warning(f'學校指紋寫入失敗：{e}')
+        return False
+
+
+def school_meta(ident):
+    """回傳給前端的學校判定資訊（不含個資）。"""
+    return {'school_key': ident['key'], 'school_name': ident.get('school_name', ''),
+            'school_source': ident.get('source', ''),
+            'school_source_label': SID.SOURCE_LABELS.get(ident.get('source'), '')}
+
+
+def pdf_title_texts(pdf_bytes):
+    """文字層 PDF 第一頁含學校字樣的標題行。"""
+    try:
+        import pdfplumber
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            text = (pdf.pages[0].extract_text() or '') if pdf.pages else ''
+    except Exception:
+        return []
+    return SID.title_texts_from_text(text)
 
 
 # ── 人員種類記憶（依身分證字號，不依學校分開）─────────────
@@ -373,13 +446,13 @@ def _layout_file():
     return os.path.join(base, 'layout_profiles.json')
 
 
-def load_layout_profile(school=''):
+def load_layout_profile(school='', legacy_keys=()):
     try:
         with open(_layout_file(), encoding='utf-8') as f:
             d = json.load(f)
     except Exception:
         d = {}
-    p = d.get(school or '_default', {})
+    p = SID.pick(d, school or '_default', legacy_keys)[1] or {}
     layout = p.get('layout')
     if layout not in ('vertical', 'horizontal'):
         layout = None
@@ -436,7 +509,7 @@ def schools_by_style():
     return groups
 
 
-def save_layout_profile(school, layout, name_match_rate, style_profile=None):
+def save_layout_profile(school, layout, name_match_rate, style_profile=None, legacy_keys=()):
     """
     只在 OCR 姓名經 AF 驗證後，記住該校成功使用的版面。
     style_profile（版型代碼／結構特徵／OCR 策略）通過白名單且與 layout 一致時一併記錄；
@@ -453,7 +526,7 @@ def save_layout_profile(school, layout, name_match_rate, style_profile=None):
                 d = json.load(f)
         except Exception:
             d = {}
-        prev = d.get(school, {})
+        prev = SID.pick(d, school, legacy_keys)[1] or {}
         rec = {
             'layout': layout,
             'samples': int(prev.get('samples', 0) or 0) + 1,
@@ -1717,9 +1790,12 @@ def compare_pdf():
         app.logger.exception('讀取 AF 失敗')
         return jsonify({'error': '讀取 AF 失敗，請確認檔案內容後重試。'}), 500
 
+    content = SID.af_content(af_bytes, af_name)
+
     # ── 掃描圖檔 → 無法解析 ──
     if not paycheck.has_text_layer(pdf_bytes):
         job_id = None
+        ident = resolve_school(af_name, content=content)
         if ocr_enabled():
             # 先保留檔案，使用者按下按鈕才真正送辨識（逾時自動清除）
             job_id = uuid.uuid4().hex[:12]
@@ -1727,7 +1803,7 @@ def compare_pdf():
                 _ocr_gc()
                 _ocr_jobs[job_id] = {'status': 'held', 'created': time.time(),
                                      'pdf': pdf_bytes, 'af': af_bytes, 'af_name': af_name,
-                                     'school_key': school_key(af_name),
+                                     'school_key': ident['key'], 'school': ident,
                                      'people': None, 'layout': None, 'error': None}
 
         return jsonify({
@@ -1765,17 +1841,23 @@ def compare_pdf():
                     '請改用薪資系統「直接匯出」的原始 PDF。'
                 ]}), 400
 
-        skey = school_key(af_name)
-        ex = load_exclusions(skey)
+        ident = resolve_school(af_name, pdf_texts=pdf_title_texts(pdf_bytes),
+                               content=content)
+        skey, legacy = ident['key'], ident['legacy_keys']
         af_names = {a['姓名'] for a in af_records}
+        pdf_names = [(p.get('姓名') or '').strip() for p in pdf_people]
+        verified = bool(pdf_names) and (
+            sum(1 for n in pdf_names if n in af_names) / len(pdf_names) >= 0.5)
+        remember_school(ident, verified)
+        ex = load_exclusions(skey, legacy)
         obs = paycheck.title_observations(pdf_people, af_names)
         stats = merge_title_stats(obs)
         learned, _ = paycheck.learned_suggestions(stats)
         if learned:
             auto = sorted({x['職稱'] for x in learned} | set(ex['titles']))
             if auto != sorted(ex['titles']):
-                save_exclusions(skey, auto, ex['names'])
-                ex = load_exclusions(skey)
+                save_exclusions(skey, auto, ex['names'], legacy_keys=legacy)
+                ex = load_exclusions(skey, legacy)
 
         paycheck.mark_exclusions(
             pdf_people, ex['titles'], ex['names'], ex.get('use_default', True))
@@ -1796,7 +1878,7 @@ def compare_pdf():
         out['af_count'] = len(af_records)
         out['pdf_count'] = len(pdf_people)
         out['warnings'] = af_warns
-        out['school_key'] = skey
+        out.update(school_meta(ident))
         out['counts'] = bump_counter('compares')
         return jsonify(out)
 
@@ -1852,14 +1934,17 @@ def ocr_submit_fixed():
         if not j:
             return jsonify({'error': '此次辨識結果已逾時，請重新上傳'}), 404
         good, af_bytes, af_name = j.get('good', []), j['af'], j['af_name']
+        ident = j.get('school')
     try:
         af_records, af_warns = paycheck.load_af(af_bytes, af_name)
-        skey = school_key(af_name)
+        ident = ident or resolve_school(af_name, af_bytes)
+        skey, legacy = ident['key'], ident['legacy_keys']
         if d.get('remember_titles') or d.get('remember_names'):
-            cur = load_exclusions(skey)
+            cur = load_exclusions(skey, legacy)
             save_exclusions(skey,
                             set(cur['titles']) | set(d.get('remember_titles') or []),
-                            set(cur['names']) | set(d.get('remember_names') or []))
+                            set(cur['names']) | set(d.get('remember_names') or []),
+                            legacy_keys=legacy)
         out = paycheck.compare_with_fixed(good, d.get('rows') or [], af_records)
         out.update({'status': 'done', 'success': True, 'mode': 'ocr',
                     'layout': '掃描圖檔（文字辨識＋人工確認）',
@@ -1884,8 +1969,11 @@ def ocr_claim():
         for jid, j in _ocr_jobs.items():
             if j['status'] == 'pending':
                 j['status'] = 'processing'
-                skey = j.get('school_key') or school_key(j.get('af_name', ''))
-                profile = load_layout_profile(skey)
+                ident = j.get('school') or (
+                    {'key': j['school_key'], 'legacy_keys': [SID.legacy_key(j.get('af_name', ''))]}
+                    if j.get('school_key') else resolve_school(j.get('af_name', ''), j.get('af')))
+                skey = ident['key']
+                profile = load_layout_profile(skey, ident['legacy_keys'])
                 return jsonify({'job_id': jid,
                                 'pdf_b64': base64.b64encode(j['pdf']).decode(),
                                 'school_key': skey,
@@ -1917,6 +2005,8 @@ def ocr_result():
             layout = d.get('layout')
             j['layout'] = layout if layout in ('vertical', 'horizontal') else None
             j['layout_profile'] = clean_style_profile(d.get('layout_profile'))
+            titles = d.get('title_texts')
+            j['title_texts'] = [str(t)[:80] for t in titles[:10]] if isinstance(titles, list) else []
     return jsonify({'ok': True})
 
 
@@ -1931,6 +2021,8 @@ def ocr_status(job_id):
         layout = j.get('layout')
         style_prof = j.get('layout_profile')
         af_bytes, af_name = j['af'], j['af_name']
+        ident = j.get('school')
+        title_texts = j.get('title_texts') or []
 
     if st == 'need_review':
         return jsonify({'status': 'need_review_pending'})
@@ -1949,8 +2041,21 @@ def ocr_status(job_id):
 
     try:
         af_records, af_warns = paycheck.load_af(af_bytes, af_name)
-        skey = school_key(af_name)
-        ex = load_exclusions(skey)
+        ident = ident or resolve_school(af_name, af_bytes)
+        if title_texts and ident.get('source') not in SID.STRONG_SOURCES:
+            # 檔名／指紋判定較弱：改以 OCR 讀到的清冊標題校名對回機關代碼
+            by_title = resolve_school(af_name, pdf_texts=title_texts,
+                                      content=SID.af_content(af_bytes, af_name))
+            if by_title['source'] == 'pdf_name':
+                by_title['legacy_keys'] = list(dict.fromkeys(
+                    by_title['legacy_keys'] + [ident['key']] + ident['legacy_keys']))
+                ident = by_title
+                with _ocr_lock:
+                    if job_id in _ocr_jobs:
+                        _ocr_jobs[job_id]['school'] = ident
+                        _ocr_jobs[job_id]['school_key'] = ident['key']
+        skey, legacy = ident['key'], ident['legacy_keys']
+        ex = load_exclusions(skey, legacy)
         good, need = paycheck.from_ocr(people, af_records)
 
         # 用 AF 的「姓名完全相符或有效身分證」驗證 Mac 選出的版面。
@@ -1967,7 +2072,8 @@ def ocr_status(job_id):
         )
         name_match_rate = name_matches / len(people) if people else 0
         if layout and len(people) >= 3 and name_match_rate >= 0.5:
-            save_layout_profile(skey, layout, name_match_rate, style_prof)
+            save_layout_profile(skey, layout, name_match_rate, style_prof, legacy)
+        remember_school(ident, verified=len(people) >= 3 and name_match_rate >= 0.5)
 
         af_names_set = {a['姓名'] for a in af_records}
         stats = merge_title_stats(paycheck.title_observations(good + need, af_names_set))
@@ -1975,8 +2081,8 @@ def ocr_status(job_id):
         if learned:
             auto = sorted({x['職稱'] for x in learned} | set(ex['titles']))
             if auto != sorted(ex['titles']):
-                save_exclusions(skey, auto, ex['names'])
-                ex = load_exclusions(skey)
+                save_exclusions(skey, auto, ex['names'], legacy_keys=legacy)
+                ex = load_exclusions(skey, legacy)
 
         ud = ex.get('use_default', True)
         paycheck.mark_exclusions(good, ex['titles'], ex['names'], ud)
@@ -2001,7 +2107,7 @@ def ocr_status(job_id):
                     _ocr_jobs[job_id]['status'] = 'need_review'
             return jsonify({
                 'status': 'need_review', 'success': True, 'job_id': job_id,
-                'auto_ok': len(good), 'need': need, 'school_key': skey,
+                'auto_ok': len(good), 'need': need, **school_meta(ident),
                 # 正式職稱是稽核對象，永遠不提供「整類排除」選項。
                 'exclude_title_options': sorted({
                     (n.get('職稱') or '').strip() for n in need
@@ -2016,7 +2122,7 @@ def ocr_status(job_id):
         out.update({'status': 'done', 'success': True, 'mode': 'ocr',
                     'layout': '掃描圖檔（文字辨識）', 'af_count': len(af_records),
                     'pdf_count': len(good), 'warnings': af_warns,
-                    'school_key': skey, 'counts': bump_counter('compares')})
+                    **school_meta(ident), 'counts': bump_counter('compares')})
         with _ocr_lock:
             _ocr_jobs.pop(job_id, None)
         return jsonify(out)
