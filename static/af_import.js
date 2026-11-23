@@ -107,7 +107,7 @@
   // ── 書籤 ──
   var BOOKMARKLET = "javascript:(function(){var A='" + AFTOOL + "';" +
     "if(location.hostname!=='fund.dgpa.gov.tw'){alert('請先登入 eCPA，打開 AF 系統（fund.dgpa.gov.tw）的「資料校對及報表列印」頁面，再按這個書籤。');return;}" +
-    "var w=window.open('','aftool_af_import');try{if(w&&w.location.href==='about:blank'){w.location.href=A+'/?import=af';}}catch(e){}" +
+    "var w=null;try{w=window.open('','aftool_af_import');var b=!w||w.closed||w.location.href==='about:blank';}catch(e){b=false;}if(b){w=window.open(A+'/?import=af','aftool_af_import');}if(!w){alert('瀏覽器擋住了 aftool 視窗，請允許 fund.dgpa.gov.tw 開啟彈出式視窗後再按一次。');return;}" +
     "window.__aftoolWin=w;var s=document.createElement('script');s.src=A+'/static/af_oneclick.js?t='+Date.now();" +
     "s.onerror=function(){alert('載入 aftool 一鍵匯入程式失敗，請確認網路連線。');};(document.body||document.documentElement).appendChild(s);})();";
 
