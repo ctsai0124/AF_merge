@@ -158,21 +158,43 @@
     } else if (d.type === 'af-error' && typeof d.message === 'string') {
       banner('err', '一鍵匯入失敗：' + d.message.slice(0, 500) + '（也可以改用手動下載後拖進下方框）');
     } else if (d.type === 'af-zip' && d.blob instanceof Blob) {
-      if (d.blob.size > 16 * 1024 * 1024) { banner('err', '收到的檔案過大，已略過。'); return; }
-      var name = (typeof d.name === 'string' && d.name) ? d.name.slice(0, 200) : 'AF校對清冊.zip';
-      if (!/\.zip$/i.test(name)) name += '.zip';
-      banner('', '已從 AF 系統收到檔案，正在解開…');
       e.source.postMessage({ type: 'aftool-received' }, FUND_ORIGIN);
-      unzipAndSet(new File([d.blob], name, { type: 'application/zip' })).then(function (ok) {
-        if (ok) {
-          banner('', '✅ 已從 AF 系統匯入校對清冊：' + (files.af ? files.af.name : '') + '。接著上傳固定清冊或薪資清冊後即可執行。');
-          var dz = $('drop-af'); if (dz && dz.scrollIntoView) dz.scrollIntoView({ block: 'center' });
-          try { window.focus(); } catch (err) {}
-        } else {
-          banner('err', '已收到 AF 檔案，但無法自動解開，請看下方 AF 上傳框的提示。');
-        }
-      });
+      importAfZip(d.blob, d.name);
     }
+  });
+
+  // 共用：收到 AF 系統傳來的 ZIP（書籤或 Edge 擴充功能）→ 解開並放進 AF 上傳框
+  function importAfZip(blob, rawName) {
+    if (blob.size > 16 * 1024 * 1024) { banner('err', '收到的檔案過大，已略過。'); return Promise.resolve(false); }
+    var name = (typeof rawName === 'string' && rawName) ? rawName.slice(0, 200) : 'AF校對清冊.zip';
+    if (!/\.zip$/i.test(name)) name += '.zip';
+    banner('', '已從 AF 系統收到檔案，正在解開…');
+    return unzipAndSet(new File([blob], name, { type: 'application/zip' })).then(function (ok) {
+      if (ok) {
+        banner('', '✅ 已從 AF 系統匯入校對清冊：' + (files.af ? files.af.name : '') + '。接著上傳固定清冊或薪資清冊後即可執行。');
+        var dz = $('drop-af'); if (dz && dz.scrollIntoView) dz.scrollIntoView({ block: 'center' });
+        try { window.focus(); } catch (err) {}
+      } else {
+        banner('err', '已收到 AF 檔案，但無法自動解開，請看下方 AF 上傳框的提示。');
+      }
+      return ok;
+    });
+  }
+
+  // ── 接收 Edge 擴充功能「AF → aftool 一鍵匯入」送來的 ZIP ──
+  // 擴充功能的 content script 與本頁同源同視窗，以 window.postMessage 傳入；只接受本視窗、本來源。
+  window.addEventListener('message', function (e) {
+    if (e.source !== window || e.origin !== location.origin) return;
+    var d = e.data;
+    if (!d || typeof d !== 'object' || d.source !== 'aftool-extension' || d.type !== 'af-zip') return;
+    if (!(d.blob instanceof Blob) || typeof d.id !== 'string') return;
+    var reply = function (ok, error) {
+      window.postMessage({ source: 'aftool-page', type: 'af-ext-result', id: d.id, ok: ok,
+        filename: ok && files.af ? files.af.name : '', error: error || '' }, location.origin);
+    };
+    importAfZip(d.blob, d.name).then(function (ok) {
+      reply(ok, ok ? '' : ((($('afi-msg') || {}).textContent) || '無法自動解開，請看 aftool 頁面上的提示'));
+    }, function (err) { reply(false, String(err && err.message || err)); });
   });
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', setupUi);

@@ -11,10 +11,11 @@
 .afi-guide a{color:#1a5c9c}
 .afi-warn{color:#8a5a00}
 .afi-onekey{margin-top:8px;padding:8px 10px;background:#fff;border:1px dashed #1a3a5c}
+.afi-tag{display:inline-block;margin-left:6px;padding:0 6px;border-radius:8px;background:#fff3cd;color:#8a5a00;font-size:11px;border:1px solid #e0b44c}
 .afi-bm{display:inline-block;padding:4px 10px;background:#1a3a5c;color:#fff !important;text-decoration:none;border-radius:4px;font-weight:700;cursor:grab}
 .afi-pw{margin-top:8px;padding:8px 10px;background:#fff8e6;border:1px solid #e0b44c;font-size:12px}
 .afi-pw input[type=password]{width:200px;padding:3px 6px;margin:4px 6px 4px 0}
-.afi-msg{margin-top:6px;font-size:12px}
+.afi-msg{margin-top:6px;font-size:12px;word-break:break-all}
 .afi-msg.err{color:#b00020}.afi-msg.ok{color:#2a6e3f}.afi-msg.info{color:#1a3a5c}
 .afi-banner{display:none;margin:0 0 12px;padding:10px 14px;background:#eaf5ec;border:1px solid #2a6e3f;color:#1d4d2c;font-size:13px}
 .afi-banner.err{background:#fdeeee;border-color:#b00020;color:#7a0016}
@@ -33,11 +34,23 @@
       </ol>
       <div class="afi-warn">公版密碼是公開的，只用來下載這份報表，請勿拿去當其他系統的密碼。</div>
       <div class="afi-onekey">
-        <b>一鍵匯入（免下載、免拖檔）</b>：把這個按鈕拖到瀏覽器的書籤列 →
-        <a class="afi-bm" id="afi-bookmarklet" href="#" title="請拖曳到書籤列">AF → aftool</a><br>
-        之後在 AF 系統的「資料校對及報表列印」頁面（或已打開的「報表列印」視窗）按一下這個書籤，就會自動選校對清冊(A)、填公版密碼、取得檔案並送進本頁。多校時切換「兼辦機關」後再按一次即可。<br>
-        <span style="color:#777">書籤列沒顯示：Edge／Chrome 按 Ctrl+Shift+B（Mac：⌘+Shift+B）。無法拖曳時，可新增書籤並把網址貼上：</span>
-        <button type="button" id="afi-copy-bm" style="font-size:11px;margin-left:4px">複製書籤網址</button>
+        <b>一鍵匯入（免下載、免拖檔）：Edge 擴充功能「AF → aftool 一鍵匯入」</b>
+        <span class="afi-tag">商店審核中</span><br>
+        安裝後，AF 系統頁面右下角會出現「<b>AF → aftool 一鍵匯入</b>」按鈕（也可按工具列的 AF 圖示）。在「資料校對及報表列印」頁面按一下，就會自動選校對清冊(A)、EXCEL、填公版密碼，取得檔案並送進 aftool 分頁；多校時切換「兼辦機關」後再按一次，會沿用同一個 aftool 分頁。
+        <div style="margin-top:6px"><b>審核通過前，可先用開發人員模式安裝：</b></div>
+        <ol>
+          <li>下載 <a href="{{ af_ext_zip_url }}" download>AF-aftool-extension-{{ af_ext_version }}.zip</a>，在電腦上<b>解壓縮</b>成一個資料夾（放在不會被刪掉的位置）。</li>
+          <li>Edge 網址列輸入 <code>edge://extensions</code>，開啟左側（或下方）的「<b>開發人員模式</b>」。</li>
+          <li>按「<b>載入解壓縮</b>」，選剛才解壓縮出的資料夾（裡面直接看得到 manifest.json 的那一層）。</li>
+          <li>重新整理 AF 系統頁面，右下角就會出現按鈕。</li>
+        </ol>
+        <span style="color:#777">公務電腦若由機關統一管理，可能禁止開發人員模式或自行安裝擴充功能，請改等商店版或洽資訊人員。擴充功能只在 fund.dgpa.gov.tw 與 aftool.leotsai.me 運作，<a href="/privacy-extension" target="_blank" rel="noopener">隱私權聲明</a>。</span>
+        <details style="margin-top:6px"><summary style="cursor:pointer;color:#555">其他方式：書籤（Edge 可能整個擋掉，僅供 Chrome 等瀏覽器備用）</summary>
+          把這個按鈕拖到書籤列 →
+          <a class="afi-bm" id="afi-bookmarklet" href="#" title="請拖曳到書籤列">AF → aftool</a>
+          <button type="button" id="afi-copy-bm" style="font-size:11px;margin-left:4px">複製書籤網址</button><br>
+          <span style="color:#777">在 AF 系統頁面按書籤使用。Edge 可能因政策封鎖 javascript: 書籤（只會開出 about:blank#blocked），此時請改用上面的擴充功能或手動下載 ZIP 拖進下方框。</span>
+        </details>
       </div>
     </div>
   </details>

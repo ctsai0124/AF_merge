@@ -22,8 +22,8 @@ app.config.update(
     SESSION_COOKIE_SAMESITE='Lax',  # 降低跨站請求偽造（CSRF）風險
 )
 
-APP_VERSION = 'v1.3.20'
-BUILD_VERSION = '2026.11.23.1'
+APP_VERSION = 'v1.3.21'
+BUILD_VERSION = '2026.11.23.2'
 
 
 def _is_sensitive_response(path):
@@ -1316,9 +1316,21 @@ import urllib.parse
 import af_zip
 
 
+# v1.3.21：Edge 擴充功能「AF → aftool 一鍵匯入」（原始碼 extension/edge，
+# 打包檔由 extension/tools/build_zip.py 產生到 static/extension/）
+AF_EXTENSION_VERSION = '1.0.0'
+
+
 @app.context_processor
 def _af_import_context():
-    return {'af_public_password': af_zip.PUBLIC_PASSWORD}
+    return {'af_public_password': af_zip.PUBLIC_PASSWORD,
+            'af_ext_version': AF_EXTENSION_VERSION,
+            'af_ext_zip_url': f'/static/extension/AF-aftool-extension-{AF_EXTENSION_VERSION}.zip'}
+
+
+@app.route('/privacy-extension')
+def privacy_extension():
+    return render_template('privacy_extension.html')
 
 
 @app.route('/af/unzip', methods=['POST'])

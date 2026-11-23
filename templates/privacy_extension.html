@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>「AF → aftool 一鍵匯入」擴充功能隱私權聲明</title>
+<style>
+body{font-family:'Microsoft JhengHei','微軟正黑體',Arial,sans-serif;max-width:760px;margin:30px auto;padding:0 18px;color:#223;line-height:1.8;font-size:15px}
+h1{font-size:22px;color:#1a3a5c;border-bottom:2px solid #1a3a5c;padding-bottom:6px}
+h2{font-size:17px;color:#1a3a5c;margin-top:22px}
+code{background:#f3f5f8;padding:0 4px}
+.muted{color:#667;font-size:13px}
+</style>
+</head>
+<body>
+<h1>「AF → aftool 一鍵匯入」Microsoft Edge 擴充功能隱私權聲明</h1>
+<p class="muted">適用版本：{{ af_ext_version }}　｜　最後更新：2026-11-23　｜　網站：<a href="https://aftool.leotsai.me/">https://aftool.leotsai.me/</a></p>
+
+<h2>這個擴充功能做什麼</h2>
+<p>協助學校人事人員，把行政院人事行政總處「各機關學校用人費用管理資訊系統」（<code>https://fund.dgpa.gov.tw</code>）的「校對清冊(A)」報表，直接匯入「AF 用人費用欄位排序系統」（<code>https://aftool.leotsai.me</code>），省去手動下載、解壓縮與上傳。</p>
+
+<h2>讀取哪些資料</h2>
+<ul>
+  <li>只在 <code>https://fund.dgpa.gov.tw/*</code> 與 <code>https://aftool.leotsai.me/*</code> 兩個網站運作，不讀取其他任何網站。</li>
+  <li>在 AF 系統中，只有在您按下「AF → aftool 一鍵匯入」按鈕（或工具列圖示）時，才讀取「報表列印」畫面的表單欄位，並以您目前的登入狀態向 AF 系統要求「校對清冊(A)」報表（EXCEL 格式，以公版下載密碼加密的 ZIP 檔）。</li>
+  <li>不讀取、不儲存、不傳送您的 cookie、帳號、密碼、憑證或瀏覽紀錄，也不會送出 AF 系統中任何其他表單或修改任何資料。</li>
+</ul>
+
+<h2>資料送到哪裡</h2>
+<ul>
+  <li>取得的校對清冊 ZIP 只會在您的瀏覽器內，交給您已開啟（或由擴充功能開啟）的 aftool 分頁。</li>
+  <li>aftool 網站會在伺服器記憶體中解開這個 ZIP，供本次排序／比對使用，不另存解開後的檔案；處理方式與您手動上傳 AF 檔相同。</li>
+  <li>擴充功能本身沒有任何分析、廣告或追蹤程式，不會把資料送到 aftool 以外的任何第三方。</li>
+</ul>
+
+<h2>儲存</h2>
+<p>擴充功能不在您的電腦上儲存任何資料（未使用瀏覽器儲存空間權限）。aftool 網站在您選擇「記在這台電腦」時，才會把您自行輸入的 ZIP 密碼存在您自己瀏覽器的 localStorage，不會存到伺服器。</p>
+
+<h2>權限說明</h2>
+<ul>
+  <li><b>網站存取權（fund.dgpa.gov.tw、aftool.leotsai.me）</b>：在 AF 系統頁面顯示按鈕並取得報表；在 aftool 頁面接收報表。</li>
+  <li>不要求「所有網站」、cookie、下載、歷史紀錄或其他權限。</li>
+</ul>
+
+<h2>聯絡方式</h2>
+<p>本擴充功能由 aftool 維護者 Leo Tsai 提供，供學校人事人員業務使用。如有疑問，請洽 aftool 維護者或您所屬的人事單位。</p>
+</body>
+</html>

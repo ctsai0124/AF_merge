@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "AF → aftool 一鍵匯入",
+  "short_name": "AF→aftool",
+  "version": "1.0.0",
+  "description": "在「各機關學校用人費用管理資訊系統」按一下，自動取得校對清冊(A)並直接匯入 aftool 欄位排序系統，免下載、免拖檔。",
+  "homepage_url": "https://aftool.leotsai.me/",
+  "icons": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
+  "action": {
+    "default_title": "AF → aftool 一鍵匯入（請在 AF 系統頁面使用）",
+    "default_icon": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" }
+  },
+  "background": { "service_worker": "background.js" },
+  "host_permissions": ["https://fund.dgpa.gov.tw/*", "https://aftool.leotsai.me/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://fund.dgpa.gov.tw/*"],
+      "js": ["af_core.js", "fund_content.js"],
+      "all_frames": true,
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://aftool.leotsai.me/*"],
+      "js": ["aftool_bridge.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
