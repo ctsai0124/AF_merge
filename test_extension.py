@@ -1,4 +1,4 @@
-"""Edge 擴充功能「AF → aftool 一鍵匯入」（v1.3.21）：權限最小化、無遠端程式碼、打包檔與網站頁面。"""
+"""Edge 擴充功能「AF → aftool 一鍵匯入」（v1.3.21；v1.3.22 起首頁入口預設隱藏）：權限最小化、無遠端程式碼、打包檔與網站頁面。"""
 import io
 import json
 import os
@@ -84,14 +84,37 @@ class SiteTests(unittest.TestCase):
         self.assertIn('fund.dgpa.gov.tw', page)
         self.assertIn('aftool.leotsai.me', page)
 
+    @patch('app.AF_ONECLICK_ENABLED', True)
     @patch('app.touch_active')
     @patch('app.bump_counter', return_value={'visits': 1, 'sorts': 0, 'compares': 0})
-    def test_home_links_extension_download(self, _c, _a):
+    def test_home_links_extension_download_when_enabled(self, _c, _a):
         page = self.client.get('/', headers=self.h).get_data(as_text=True)
+        self.assertIn('data-oneclick="1"', page)
+        self.assertIn('afi-bookmarklet', page)
         self.assertIn(f'/static/extension/AF-aftool-extension-{AF_EXTENSION_VERSION}.zip', page)
         self.assertIn('edge://extensions', page)
         self.assertIn('/privacy-extension', page)
         self.assertIn('about:blank#blocked', page)
+
+    @patch('app.touch_active')
+    @patch('app.bump_counter', return_value={'visits': 1, 'sorts': 0, 'compares': 0})
+    def test_oneclick_hidden_by_default_but_zip_import_kept(self, _c, _a):
+        """2026-11-24 起預設隱藏一鍵匯入入口（AF_ONECLICK_ENABLED = False），ZIP 匯入照常。"""
+        import app as A
+        self.assertFalse(A.AF_ONECLICK_ENABLED)
+        page = self.client.get('/', headers=self.h).get_data(as_text=True)
+        self.assertIn('data-oneclick="0"', page)
+        for hidden in ('AF-aftool-extension-', 'edge://extensions', 'afi-bookmarklet', 'afi-copy-bm',
+                       '商店審核中', '可一鍵匯入', '/privacy-extension'):
+            self.assertNotIn(hidden, page)
+        # ZIP 拖放／公版密碼解密入口仍在
+        self.assertIn('/static/af_import.js?v=', page)
+        self.assertIn('如何從 AF 系統取得檔案', page)
+        self.assertIn(A.af_zip.PUBLIC_PASSWORD, page)
+        self.assertIn('afi-pw-tpl', page)
+        # 外掛、書籤程式與隱私權頁仍保留，可隨時恢復
+        self.assertEqual(self.client.get('/privacy-extension', headers=self.h).status_code, 200)
+        r = self.client.get('/static/af_oneclick.js', headers=self.h); self.assertEqual(r.status_code, 200); r.close()
 
     def test_zip_download(self):
         r = self.client.get(f'/static/extension/AF-aftool-extension-{AF_EXTENSION_VERSION}.zip', headers=self.h)

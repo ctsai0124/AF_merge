@@ -22,8 +22,8 @@ app.config.update(
     SESSION_COOKIE_SAMESITE='Lax',  # 降低跨站請求偽造（CSRF）風險
 )
 
-APP_VERSION = 'v1.3.21'
-BUILD_VERSION = '2026.11.23.2'
+APP_VERSION = 'v1.3.22'
+BUILD_VERSION = '2026.11.24.1'
 
 
 def _is_sensitive_response(path):
@@ -1319,12 +1319,16 @@ import af_zip
 # v1.3.21：Edge 擴充功能「AF → aftool 一鍵匯入」（原始碼 extension/edge，
 # 打包檔由 extension/tools/build_zip.py 產生到 static/extension/）
 AF_EXTENSION_VERSION = '1.0.0'
+# 一鍵匯入（Edge 擴充功能／書籤）首頁入口開關：2026-11-24 依 Leo 指示暫時隱藏。
+# 改 True 即恢復；ZIP 拖放匯入（/af/unzip）不受影響。
+AF_ONECLICK_ENABLED = False
 
 
 @app.context_processor
 def _af_import_context():
     return {'af_public_password': af_zip.PUBLIC_PASSWORD,
             'af_ext_version': AF_EXTENSION_VERSION,
+            'af_oneclick_enabled': AF_ONECLICK_ENABLED,
             'af_ext_zip_url': f'/static/extension/AF-aftool-extension-{AF_EXTENSION_VERSION}.zip'}
 
 

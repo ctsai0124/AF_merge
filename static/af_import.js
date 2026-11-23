@@ -140,7 +140,8 @@
       if (navigator.clipboard) navigator.clipboard.writeText(BOOKMARKLET).then(done, function () { window.prompt('請複製以下內容：', BOOKMARKLET); });
       else window.prompt('請複製以下內容：', BOOKMARKLET);
     });
-    if (/[?&]import=af\b/.test(location.search)) {
+    var guide = $('afi-guide');
+    if (guide && guide.getAttribute('data-oneclick') === '1' && /[?&]import=af\b/.test(location.search)) {
       banner('', '等待 AF 系統傳送校對清冊…（請不要關閉 AF 系統視窗）');
     }
   }

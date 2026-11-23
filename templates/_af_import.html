@@ -21,8 +21,8 @@
 .afi-banner.err{background:#fdeeee;border-color:#b00020;color:#7a0016}
 </style>
 <template id="afi-guide-tpl">
-  <details class="afi-guide" id="afi-guide">
-    <summary>如何從 AF 系統取得檔案（可一鍵匯入）</summary>
+  <details class="afi-guide" id="afi-guide" data-oneclick="{{ '1' if af_oneclick_enabled else '0' }}">
+    <summary>如何從 AF 系統取得檔案{% if af_oneclick_enabled %}（可一鍵匯入）{% endif %}</summary>
     <div class="afi-guide-body">
       <ol>
         <li><b>先登入 <a href="https://ecpa.dgpa.gov.tw/" target="_blank" rel="noopener">eCPA 人事服務網</a></b>，在首頁點「<b>AF:各機關學校用人費用管理資訊系統</b>」。<br>
@@ -33,6 +33,8 @@
         <li>把下載的 <b>.zip</b> 直接拖到下方框內（不用解壓縮、不用轉檔），系統會自動解開。</li>
       </ol>
       <div class="afi-warn">公版密碼是公開的，只用來下載這份報表，請勿拿去當其他系統的密碼。</div>
+      {# 一鍵匯入（Edge 擴充功能／書籤）入口：2026-11-24 依 Leo 指示暫時隱藏，app.py 的 AF_ONECLICK_ENABLED 改 True 即恢復 #}
+      {% if af_oneclick_enabled %}
       <div class="afi-onekey">
         <b>一鍵匯入（免下載、免拖檔）：Edge 擴充功能「AF → aftool 一鍵匯入」</b>
         <span class="afi-tag">商店審核中</span><br>
@@ -52,6 +54,7 @@
           <span style="color:#777">在 AF 系統頁面按書籤使用。Edge 可能因政策封鎖 javascript: 書籤（只會開出 about:blank#blocked），此時請改用上面的擴充功能或手動下載 ZIP 拖進下方框。</span>
         </details>
       </div>
+      {% endif %}
     </div>
   </details>
 </template>
