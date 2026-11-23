@@ -1,0 +1,54 @@
+{# v1.3.20：AF 校對清冊 ZIP 匯入、取得步驟與書籤一鍵匯入。由 static/af_import.js 放到 AF 上傳區。 #}
+<style>
+.afi-guide{margin:8px 0 10px;border:1px solid #d6dee8;background:#f7fafd;font-size:12px;color:#334}
+.afi-guide>summary{display:block;cursor:pointer;padding:7px 10px;font-weight:700;color:#1a3a5c;list-style:none}
+.afi-guide>summary::-webkit-details-marker{display:none}
+.afi-guide>summary::before{content:'▸ ';}
+.afi-guide[open]>summary::before{content:'▾ ';}
+.afi-guide-body{padding:2px 12px 10px}
+.afi-guide ol{margin:4px 0 6px 18px;padding:0;line-height:1.7}
+.afi-guide code{background:#fff;border:1px solid #d6dee8;padding:0 4px;font-size:12px;user-select:all;word-break:break-all;white-space:normal}
+.afi-guide a{color:#1a5c9c}
+.afi-warn{color:#8a5a00}
+.afi-onekey{margin-top:8px;padding:8px 10px;background:#fff;border:1px dashed #1a3a5c}
+.afi-bm{display:inline-block;padding:4px 10px;background:#1a3a5c;color:#fff !important;text-decoration:none;border-radius:4px;font-weight:700;cursor:grab}
+.afi-pw{margin-top:8px;padding:8px 10px;background:#fff8e6;border:1px solid #e0b44c;font-size:12px}
+.afi-pw input[type=password]{width:200px;padding:3px 6px;margin:4px 6px 4px 0}
+.afi-msg{margin-top:6px;font-size:12px}
+.afi-msg.err{color:#b00020}.afi-msg.ok{color:#2a6e3f}.afi-msg.info{color:#1a3a5c}
+.afi-banner{display:none;margin:0 0 12px;padding:10px 14px;background:#eaf5ec;border:1px solid #2a6e3f;color:#1d4d2c;font-size:13px}
+.afi-banner.err{background:#fdeeee;border-color:#b00020;color:#7a0016}
+</style>
+<template id="afi-guide-tpl">
+  <details class="afi-guide" id="afi-guide">
+    <summary>如何從 AF 系統取得檔案（可一鍵匯入）</summary>
+    <div class="afi-guide-body">
+      <ol>
+        <li><b>先登入 <a href="https://ecpa.dgpa.gov.tw/" target="_blank" rel="noopener">eCPA 人事服務網</a></b>，在首頁點「<b>AF:各機關學校用人費用管理資訊系統</b>」。<br>
+          （歡迎頁網址 <code>https://fund.dgpa.gov.tw/system/WebMain.aspx</code>，按「進入本系統」；登入後主畫面為 <code>https://fund.dgpa.gov.tw/system/CPA.aspx</code>。開放時間每日 7:00～19:00）</li>
+        <li>兼辦多校時，先在右上角「<b>兼辦機關</b>」切換到要處理的學校。</li>
+        <li>左側選單「用人費用資料維護」→「資料校對及報表列印」→ 右下「<b>報表列印</b>」。</li>
+        <li>報表種類選「<b>校對清冊(A)</b>」，報表格式選 <b>EXCEL</b>，「身分證號密碼」欄填公版密碼 <code>{{ af_public_password }}</code>，按「下載報表」。</li>
+        <li>把下載的 <b>.zip</b> 直接拖到下方框內（不用解壓縮、不用轉檔），系統會自動解開。</li>
+      </ol>
+      <div class="afi-warn">公版密碼是公開的，只用來下載這份報表，請勿拿去當其他系統的密碼。</div>
+      <div class="afi-onekey">
+        <b>一鍵匯入（免下載、免拖檔）</b>：把這個按鈕拖到瀏覽器的書籤列 →
+        <a class="afi-bm" id="afi-bookmarklet" href="#" title="請拖曳到書籤列">AF → aftool</a><br>
+        之後在 AF 系統的「資料校對及報表列印」頁面（或已打開的「報表列印」視窗）按一下這個書籤，就會自動選校對清冊(A)、填公版密碼、取得檔案並送進本頁。多校時切換「兼辦機關」後再按一次即可。<br>
+        <span style="color:#777">書籤列沒顯示：Edge／Chrome 按 Ctrl+Shift+B（Mac：⌘+Shift+B）。無法拖曳時，可新增書籤並把網址貼上：</span>
+        <button type="button" id="afi-copy-bm" style="font-size:11px;margin-left:4px">複製書籤網址</button>
+      </div>
+    </div>
+  </details>
+</template>
+<template id="afi-pw-tpl">
+  <div class="afi-pw" id="afi-pw">
+    <div id="afi-pw-text">這個 ZIP 不是用公版密碼加密的，請輸入下載時在「身分證號密碼」欄填的密碼：</div>
+    <input type="password" id="afi-pw-input" autocomplete="off" aria-label="ZIP 密碼">
+    <button type="button" id="afi-pw-ok">解開</button>
+    <button type="button" id="afi-pw-cancel">取消</button><br>
+    <label><input type="checkbox" id="afi-pw-remember" checked> 記在這台電腦的瀏覽器（不會存到伺服器）</label>
+  </div>
+</template>
+<script src="/static/af_import.js?v={{ app_version }}"></script>

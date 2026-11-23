@@ -22,8 +22,8 @@ app.config.update(
     SESSION_COOKIE_SAMESITE='Lax',  # 降低跨站請求偽造（CSRF）風險
 )
 
-APP_VERSION = 'v1.3.19'
-BUILD_VERSION = '2026.11.21.1'
+APP_VERSION = 'v1.3.20'
+BUILD_VERSION = '2026.11.23.1'
 
 
 def _is_sensitive_response(path):
@@ -31,7 +31,7 @@ def _is_sensitive_response(path):
     prefixes = (
         '/process', '/compare-pdf', '/cross-check', '/categories/', '/ocr/',
         '/download-simple', '/download-result', '/download-category-audit',
-        '/download-audit', '/print-', '/settings/', '/stats/diag',
+        '/download-audit', '/print-', '/settings/', '/stats/diag', '/af/unzip',
     )
     return any(path.startswith(prefix) for prefix in prefixes)
 
@@ -1305,6 +1305,42 @@ def download_standalone():
     path = os.path.join(app.root_path, 'static', 'AF欄位調整工具_單機d槽版.xlsm')
     return send_file(path, as_attachment=True, download_name='AF欄位調整工具_單機d槽版.xlsm',
                      mimetype='application/vnd.ms-excel.sheet.macroEnabled.12')
+
+
+# ── v1.3.20 新增：AF 校對清冊加密 ZIP 直接匯入（含書籤一鍵匯入）──
+# 前端收到 .zip（拖放／選檔，或 fund.dgpa.gov.tw 書籤以 postMessage 傳來）時先送到
+# 這裡，在記憶體中以公版密碼（或使用者本次輸入的密碼）解開，回傳 ZIP 內的 Excel
+# 與原始檔名（含機關代碼）。前端再把它當成一般 AF 檔交給既有流程，其餘端點不需修改。
+# 密碼只用於本次解密，不寫檔、不寫 log；解開的內容只在回應中，不落地。
+import urllib.parse
+import af_zip
+
+
+@app.context_processor
+def _af_import_context():
+    return {'af_public_password': af_zip.PUBLIC_PASSWORD}
+
+
+@app.route('/af/unzip', methods=['POST'])
+def af_unzip():
+    f = request.files.get('file')
+    if not f or not f.filename:
+        return jsonify({'error': '請選擇 AF 系統下載的 ZIP 檔', 'code': 'no_file'}), 400
+    data = f.read()
+    password = (request.form.get('password') or '')[:128] or None
+    try:
+        content, name, used = af_zip.unpack_af_zip(data, password)
+    except af_zip.AFZipError as e:
+        status = 422 if e.code in ('password_required', 'bad_password') else 400
+        return jsonify({'error': e.message, 'code': e.code}), status
+    except Exception:
+        app.logger.error('AF ZIP 解壓失敗（未預期錯誤）')
+        return jsonify({'error': 'ZIP 解壓失敗，請重新從 AF 系統下載後再試。', 'code': 'error'}), 400
+    resp = send_file(io.BytesIO(content), as_attachment=False,
+                     mimetype='application/octet-stream', download_name='af')
+    resp.headers['X-AF-Filename'] = urllib.parse.quote(name, safe='')
+    resp.headers['X-AF-Password'] = used
+    return resp
 
 
 @app.route('/process', methods=['POST'])
