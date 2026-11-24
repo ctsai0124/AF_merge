@@ -638,5 +638,241 @@ class VerticalBufaRowTests(unittest.TestCase):
         self.assertTrue(all(p['加總相符'] for p in people))
         self.assertIn('has_bufa_column', parse_tokens.style_profile(t)['traits'])
 
+# ── v1.3.26：A4 橫式薪資印領清冊（阿蓮國小型）────────────────────
+LC0, LSTEP = 0.164, 0.026          # 第 0 欄（實領金額）中心與欄寬
+LEDGER_HEADER = ('實領金額', '薪俸', '職務加給', '工作或', '導師費', '特教津貼', '其他補發',
+                 '教保費', '加項合計', '公保費', '勞保費', None, None, None, None, '所得稅',
+                 '優惠存款', '自費代課', '勞退自提', '退撫自提', '扣項合計', '機補公保費',
+                 '機補勞保費', '公提勞退金', None, None, None, None, '助款合計', None)
+
+
+def ledger_num(text, col, y, page=1, skew=0.0, conf=0.5, span=1):
+    """金額靠右對齊放在第 col 欄（span>1 表示跨數格的黏格 token）。"""
+    right = LC0 + col * LSTEP + LSTEP / 2 - 0.002
+    w = max(0.004 * len(text), 0.004) if span == 1 else LSTEP * span - 0.004
+    x = right - w / 2
+    return {'text': text, 'x': x, 'y': y + skew * (x - 0.5), 'w': w, 'conf': conf, 'page': page}
+
+
+def ledger_page(people, page=1, y0=0.22, skew=0.0, category='教員', total=True):
+    """people：[(姓名, 職稱, {欄序: 文字})]；回傳一頁 token。"""
+    t = [htoken('某某國小', 0.47, 0.045, page=page),
+         htoken('115年11月份薪資印領清冊', 0.47, 0.076, page=page),
+         htoken(category, 0.023, 0.12, page=page),
+         htoken('序編薪職稱', 0.059, 0.14, page=page), htoken('姓名', 0.116, 0.14, page=page),
+         htoken('日數', 0.142, 0.14, page=page)]
+    for i, label in enumerate(LEDGER_HEADER):
+        if label:
+            t.append(htoken(label[:3] if len(label) > 3 else label, LC0 + i * LSTEP, 0.14,
+                            w=0.012, page=page))
+    y = y0 - 0.026
+    if total:
+        t.append(htoken('總計：', 0.086, y, page=page))
+        t.append(htoken(f'{len(people)}人', 0.126, y, page=page))
+        t.append(ledger_num('9,999,999', 0, y, page))
+    for n, (name, title, cells) in enumerate(people):
+        y = y0 + n * 0.026
+        t += [htoken(str(n + 1), 0.031, y + skew * (0.031 - 0.5), page=page),
+              htoken(title, 0.075, y + skew * (0.075 - 0.5), page=page),
+              htoken(name, 0.116, y + skew * (0.116 - 0.5), w=0.02, page=page),
+              htoken('全月', 0.143, y + skew * (0.143 - 0.5), w=0.012, page=page)]
+        for col, text in cells.items():
+            if isinstance(text, tuple):
+                t.append(ledger_num(text[0], col, y, page, skew, span=text[1]))
+            else:
+                t.append(ledger_num(text, col, y, page, skew))
+    y = y0 + len(people) * 0.026 + 0.01
+    t.append(htoken('頁小計：', 0.06, y, page=page))
+    t.append(htoken(f'{len(people)}人', 0.126, y, page=page))
+    return t
+
+
+def ledger_cells(pay, mgr, prof, teach, sped, bufa, edu, deduct, zeros=True):
+    gross = pay + mgr + prof + teach + sped + bufa + edu
+    fmt = lambda v: f'{v:,}'
+    cells = {0: fmt(gross - deduct), 1: fmt(pay), 2: fmt(mgr), 3: fmt(prof), 4: fmt(teach),
+             5: fmt(sped), 6: fmt(bufa), 7: fmt(edu), 8: fmt(gross), 9: '1,407',
+             14: fmt(deduct - 1407), 20: fmt(deduct), 21: '2,614', 28: '19,436'}
+    if not zeros:
+        cells = {k: v for k, v in cells.items() if v != '0'}
+    return cells
+
+
+def summary_page():
+    t = [htoken('115年11月份薪資印領清冊彙總表', 0.47, 0.076, page=0)]
+    for i, label in enumerate(('實領金額', '薪俸', '職務加給', '加項合計', '公保費', '扣項合計')):
+        y = 0.16 + i * 0.02
+        t += [htoken(label, 0.043, y, page=0), htoken('1,234,567', 0.18, y, page=0)]
+    return t
+
+
+LEDGER_PEOPLE = [
+    ('王小明', '校長', ledger_cells(55690, 10010, 35780, 0, 0, 0, 0, 12168)),
+    ('李小華', '輔導主任', ledger_cells(55690, 5930, 35780, 0, 0, 0, 0, 13103)),
+    ('陳大同', '導師', ledger_cells(55690, 0, 35780, 4000, 0, 0, 0, 10250)),
+    ('林美玲', '特教組長', ledger_cells(54160, 5930, 30140, 0, 2800, 0, 0, 9982)),
+    ('張志強', '教師', ledger_cells(46500, 0, 35780, 0, 0, 3450, 0, 8000)),
+    ('黃淑芬', '教保員', ledger_cells(40760, 0, 0, 0, 0, 0, 4000, 4603)),
+]
+
+
+class LedgerLayoutTests(unittest.TestCase):
+    """阿蓮國小型 A4 橫式薪資印領清冊：一人一列 30 個等寬金額欄（實領金額在前、含扣項與
+    機關補助款），第一頁為彙總表。全部為虛構資料。"""
+
+    def parse(self, tokens):
+        people, layout = parse_tokens.parse_tokens(tokens)
+        return {p['姓名']: p for p in people}, layout
+
+    def test_clean_page_parses_every_column(self):
+        got, layout = self.parse(summary_page() + ledger_page(LEDGER_PEOPLE))
+        self.assertEqual(layout, 'horizontal')
+        self.assertEqual(sorted(got), sorted(n for n, _, _ in LEDGER_PEOPLE))
+        self.assertTrue(all(p['加總相符'] for p in got.values()))
+        p = got['林美玲']
+        self.assertEqual((p['薪俸'], p['主管加給'], p['專業加給'], p['導師特教'], p['應發金額']),
+                         (54160, 5930, 30140, 2800, 93030))
+        self.assertEqual((got['張志強']['補發'], got['張志強']['其他加給']), (3450, 3450))
+        self.assertEqual((got['黃淑芬']['其他加給'], got['黃淑芬']['補發']), (4000, 0))
+        self.assertEqual(got['王小明']['職稱'], '校長')
+
+    def test_layout_signature(self):
+        prof = parse_tokens.style_profile(summary_page() + ledger_page(LEDGER_PEOPLE))
+        self.assertEqual(prof['style'], 'horizontal_ledger')
+        self.assertIn('has_bufa_column', prof['traits'])
+        self.assertIn('has_summary_pages', prof['traits'])
+        self.assertEqual(parse_tokens.style_layout('horizontal_ledger'), 'horizontal')
+
+    def test_skewed_scan(self):
+        # 掃描歪斜：左端比右端低約 0.02（將近一列高）
+        got, _ = self.parse(ledger_page(LEDGER_PEOPLE, skew=-0.025))
+        self.assertEqual(len(got), len(LEDGER_PEOPLE))
+        self.assertTrue(all(p['加總相符'] for p in got.values()))
+        self.assertEqual(got['陳大同']['導師特教'], 4000)
+
+    def test_missing_zero_cells_and_category_pages(self):
+        pages = (ledger_page([(n, t, {k: v for k, v in c.items() if v != '0'})
+                              for n, t, c in LEDGER_PEOPLE[:3]], page=1)
+                 + ledger_page(LEDGER_PEOPLE[3:], page=2, category='職員', total=False))
+        got, _ = self.parse(pages)
+        self.assertEqual(len(got), 6)
+        self.assertTrue(all(p['加總相符'] for p in got.values()))
+
+    def test_scan_noise_is_resolved_by_printed_totals(self):
+        people = [list(x) for x in LEDGER_PEOPLE]
+        c = dict(people[0][2]); c[7] = '01'; c[8] = ('0101.480|', 2)      # 鄰格 0＋框線黏到加項合計
+        people[0][2] = c
+        c = dict(people[1][2]); del c[0]; c[1] = ('84,297|55,690', 2)     # 實領與薪俸黏成一格
+        c[8] = '97,40'                                                    # 加項合計末位被截斷
+        people[1][2] = c
+        c = dict(people[2][2]); c[3] = '135,780'                          # 左框線讀成開頭 1
+        people[2][2] = c
+        c = dict(people[3][2]); c[2] = '5.9301'; c[1] = '54:160'          # 右框線 1、千分位讀成冒號
+        people[3][2] = c
+        got, _ = self.parse(ledger_page([tuple(x) for x in people]))
+        self.assertTrue(all(p['加總相符'] for p in got.values()), {n: p['加總差額'] for n, p in got.items()})
+        self.assertEqual((got['王小明']['其他加給'], got['王小明']['應發金額']), (0, 101480))
+        self.assertEqual((got['李小華']['薪俸'], got['李小華']['應發金額']), (55690, 97400))
+        self.assertEqual(got['陳大同']['專業加給'], 35780)
+        self.assertEqual((got['林美玲']['薪俸'], got['林美玲']['主管加給']), (54160, 5930))
+
+    def test_multiple_ocr_passes_vote(self):
+        clean = ledger_page(LEDGER_PEOPLE)
+        noisy = []
+        for t in clean:
+            t = dict(t)
+            if t['text'] == '35,780':
+                t['text'] = '35,7B0'        # 另一次辨識讀壞，需靠其他讀法
+            noisy.append(t)
+        got, _ = self.parse(noisy + clean)
+        self.assertEqual(len(got), len(LEDGER_PEOPLE))
+        self.assertTrue(all(p['加總相符'] for p in got.values()))
+        self.assertEqual(got['王小明']['專業加給'], 35780)
+
+    def test_unverifiable_row_is_not_accepted(self):
+        people = [list(x) for x in LEDGER_PEOPLE[:3]]
+        c = dict(people[2][2]); c[1] = '55,600'; del c[0]                 # 薪俸讀錯且無實領可驗算
+        people[2][2] = c
+        got, _ = self.parse(ledger_page([tuple(x) for x in people]))
+        self.assertFalse(got['陳大同']['加總相符'])
+        self.assertTrue(got['王小明']['加總相符'])
+
+    def test_wrong_column_amount_is_rejected(self):
+        # 薪俸金額被歸到特教津貼欄：超過該欄合理上限，不可湊成相符
+        people = [list(x) for x in LEDGER_PEOPLE[:2]]
+        c = dict(people[1][2]); c[5] = c.pop(1)
+        people[1][2] = c
+        got, _ = self.parse(ledger_page([tuple(x) for x in people]))
+        self.assertEqual(got['李小華']['導師特教'], 0)
+        self.assertFalse(got['李小華']['加總相符'] and got['李小華']['薪俸'] == 0)
+
+    def test_full_month_column_is_not_a_name(self):
+        page = [t for t in ledger_page(LEDGER_PEOPLE[:2]) if t['text'] != '李小華']
+        got, _ = self.parse(page)
+        self.assertNotIn('全月', got)
+
+    def test_other_layouts_are_not_ledger(self):
+        # 三侯型表頭（應發／應扣／實發）不是本版型
+        rows = parse_tokens.group_rows([
+            htoken('編號', .05, .1), htoken('員工姓名', .13, .1), htoken('應發金額', .45, .1),
+            htoken('所得稅', .6, .1), htoken('勞退自提', .65, .1), htoken('實發金額', .8, .1),
+            htoken('應扣金額', .75, .1)])
+        self.assertFalse(parse_tokens._is_ledger(rows))
+
+    def test_several_missing_pay_cells_are_not_guessed(self):
+        # 薪俸與專業加給同時漏讀：雖然實領＋扣項＝加項合計，也不可把差額全塞給薪俸
+        people = [list(x) for x in LEDGER_PEOPLE[:3]]
+        c = dict(people[2][2]); del c[1]; del c[3]
+        people[2][2] = c
+        got, _ = self.parse(ledger_page([tuple(x) for x in people]))
+        self.assertFalse(got['陳大同']['加總相符'])
+        self.assertTrue(got['王小明']['加總相符'])
+
+    def test_second_check_must_hold(self):
+        # 加項合計＝薪資項目和，但實領＋扣項合計對不上：送人工確認
+        people = [list(x) for x in LEDGER_PEOPLE[:2]]
+        c = dict(people[1][2]); c[0] = '84,111'
+        people[1][2] = c
+        got, _ = self.parse(ledger_page([tuple(x) for x in people]))
+        self.assertFalse(got['李小華']['加總相符'])
+        self.assertTrue(got['王小明']['加總相符'])
+
+    def test_row_without_name_is_not_accepted(self):
+        page = [t for t in ledger_page(LEDGER_PEOPLE[:2]) if t['text'] not in ('李小華', '全月')]
+        people, _ = parse_tokens.parse_tokens(page)
+        self.assertEqual(len(people), 2)
+        self.assertFalse(any(p['加總相符'] for p in people if not p['姓名']))
+
+    def test_degenerate_input_does_not_crash(self):
+        self.assertEqual(parse_tokens.parse_horizontal_ledger([]), [])
+        people, _ = parse_tokens.parse_tokens(summary_page())
+        self.assertEqual(people, [])
+        # 只有表頭沒有資料列
+        header_only = [t for t in ledger_page(LEDGER_PEOPLE[:1]) if t['y'] < 0.18]
+        parse_tokens.parse_tokens(header_only)
+
+    def test_header_words_without_grid_fall_back(self):
+        # 表頭詞彙黏成長 token、無法擬合等距欄格：不視為本版型，交回既有解析器
+        rows = parse_tokens.group_rows([
+            htoken('姓名', .1, .1), htoken('實領金額薪俸職務加給', .3, .1),
+            htoken('加項合計公保費勞保費', .5, .1), htoken('扣項合計機補公保費', .7, .1)])
+        self.assertFalse(parse_tokens._is_ledger(rows))
+
+    def test_cell_reader(self):
+        read = parse_tokens._ledger_read
+        self.assertEqual(read('0101.480|')[0][0], 101480)
+        self.assertIn(87650, read('0187,650')[0])
+        self.assertEqual(read('01')[0][0], 0)
+        self.assertIn(4320, read('4.3201')[0])
+        self.assertIn(86540, read('86,54')[0])
+        here, left = read('23,456|34.567')
+        self.assertEqual((here[0], left[0]), (34567, 23456))
+        self.assertNotIn(5690, read('55,690')[0])     # 不可任意丟掉開頭數字
+        self.assertIn(31250, read('2,00031,250')[0])
+        self.assertIn(2000, read('2,00031,250')[1])
+        self.assertEqual(read('o')[0], [0])
+        self.assertEqual(read('115年1')[0], [])
+
+
 if __name__ == '__main__':
     unittest.main()

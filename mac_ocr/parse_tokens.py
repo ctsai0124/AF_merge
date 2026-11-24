@@ -1973,6 +1973,559 @@ def parse_row(row):
     return parse_horizontal_row(row)
 
 
+# ── 橫式「薪資印領清冊」：一人一列含扣項與機關補助款（v1.3.26）──────────
+# 阿蓮國小（高雄市人事薪資系統印製）A4 橫式掃描檔，每頁一個類別（教員／職員／
+# 教保員／代理），第一頁為「薪資印領清冊彙總表」（不解析）。表頭 36 欄：
+#   序號｜編號｜薪額｜職稱/官職等｜姓名｜在職日數｜實領金額｜薪俸｜職務加給｜
+#   工作或專業補助費｜導師費｜特教津貼｜其他補發｜教保費｜加項合計｜公保費｜勞保費｜
+#   健保費-公｜健保費-勞｜退撫基金｜退撫基金-儲金｜所得稅｜優惠存款｜自費代課｜
+#   勞退自提｜退撫自提｜扣項合計｜機補公保費…機關補助款合計｜健保費/人
+# 從「實領金額」起的 30 個金額欄等寬（約頁寬 0.026），金額靠右對齊。表頭字小、
+# 多行折字，OCR 幾乎讀不完整，所以用少數可辨識的欄名定出等距欄格，再以金額
+# 右緣落在哪一格歸欄。驗算：薪資項目＝加項合計，且 加項合計－扣項合計＝實領金額。
+LEDGER_COLUMNS = (
+    '實領', '薪俸', '主管加給', '專業加給', '_導師', '_特教', '_補發', '_教保',
+    '加項合計', '_公保', '_勞保', '_健保公', '_健保勞', '_退撫', '_退撫儲金',
+    '_所得稅', '_優存', '_自費代課', '_勞退自提', '_退撫自提', '扣項合計',
+    '_機補公保', '_機補勞保', '_公提勞退', '_機補健保公', '_機補健保勞',
+    '_機補退撫', '_機補退撫儲金', '機關補助款合計', '_健保人')
+LEDGER_PAY_KEYS = ('薪俸', '主管加給', '專業加給', '_導師', '_特教', '_補發', '_教保')
+_LEDGER_IDX = {k: i for i, k in enumerate(LEDGER_COLUMNS)}
+# 表頭可辨識的欄名開頭（含掃描常見形近字）→ 欄序
+LEDGER_ANCHORS = (
+    (('實領', '實领', '實翎', '實發'), 0), (('薪俸', '新俸', '薪伴', '新降', '新体'), 1),
+    (('職務加',), 2), (('工作或',), 3), (('導師', '织師', '没師'), 4),
+    (('特教', '特数'), 5), (('其他補', '其他福', '其他袖'), 6), (('教保',), 7),
+    (('加項',), 8), (('公保',), 9), (('勞保', '劳保'), 10), (('所得',), 15),
+    (('優惠', '優悲'), 16), (('自費代', '自炎代', '自装代'), 17), (('勞退自',), 18),
+    (('退撫自',), 19), (('扣項',), 20), (('機補公',), 21), (('機補勞',), 22),
+    (('公提勞',), 23), (('助款合', '叻救合', '叻歡合'), 28),
+)
+_LEDGER_NOT_NAME = {'全月', '總計', '小計', '頁小計'}
+_LEDGER_TITLE_EXTRA = ('導師', '秘書', '護理師', '教保員', '幹事', '執秘', '書記', '代理',
+                       '營養師', '專任', '運動', '廚工', '警衛', '助理員', '心理師', '社工師')
+LEDGER_PAY_MAX = 200000     # 個人單一薪資項目上限（排除黏格誤讀）
+# 各薪資欄的合理上限（超過多半是鄰欄金額被歸錯欄）；薪俸另需大於 0
+LEDGER_KEY_MAX = {'薪俸': 100000, '主管加給': 40000, '專業加給': 80000, '_導師': 12000, '_特教': 12000,
+                  '_教保': 30000}
+LEDGER_STEP = 0.026          # 實測 0.0259～0.0261
+# 一列中出現下列其中三組字樣（且含加項／扣項／機補其中兩組），就是此版型的表頭列
+_LEDGER_SIGNS = (('實領', '實领', '實翎', '實發'), ('加項',), ('扣項',),
+                 ('機補', '機關補', '機袖', '機祔'), ('優惠存', '優悲存', '俊惠存', '俊惑存'),
+                 ('所得稅', '所得税'), ('勞退自', '劳退自'))
+_LEDGER_ZERO = {'o', 'O', 'q', 'Q', 'D', '口', '〇', 'U', '0'}
+
+
+def _ledger_header_ys(page_rows):
+    """回傳本頁表頭列的 y（同列至少三組本版型特有欄名）；沒有則回傳 None。"""
+    best = None
+    for r in page_rows:
+        if not r or r[0].get('y', 1) > 0.35:
+            continue
+        text = norm_text(row_text(r))
+        hits = sum(any(s in text for s in group) for group in _LEDGER_SIGNS)
+        # 「加項／扣項／機補」是本版型特有字樣（其他清冊用應發／應扣／實發），至少要兩組
+        core = sum(any(s in text for s in group) for group in _LEDGER_SIGNS[1:4])
+        if hits >= 3 and core >= 2 and (best is None or hits > best[0]):
+            best = (hits, r[0]['y'])
+    return best[1] if best else None
+
+
+def _is_ledger(rows):
+    """至少一頁有清冊表頭，且能由表頭字擬合出等距金額欄格線。"""
+    for pr in _page_groups(rows).values():
+        hy = _ledger_header_ys(pr)
+        if hy is not None and _ledger_grid([t for r in pr for t in r], hy):
+            return True
+    return False
+
+
+def _ledger_grid(tokens, header_y):
+    """以表頭欄名定出 (第 0 欄中心 c0, 欄寬 step)；欄名太少時回傳 None。"""
+    pts = []
+    for t in tokens:
+        if abs(t.get('y', 0) - header_y) > 0.035:
+            continue
+        text = norm_text(t.get('text', ''))
+        if not text or len(text) > 5 or '|' in text:
+            continue
+        for prefixes, idx in LEDGER_ANCHORS:
+            if text.startswith(prefixes):
+                pts.append((idx, float(t['x'])))
+                break
+    idxs = {i for i, _ in pts}
+    if len(idxs) < 2:
+        return None
+    slopes = sorted((b[1] - a[1]) / (b[0] - a[0])
+                    for a in pts for b in pts if b[0] > a[0])
+    step = slopes[len(slopes) // 2]
+    if not 0.022 <= step <= 0.030:
+        step = LEDGER_STEP
+    starts = sorted(x - i * step for i, x in pts)
+    c0 = starts[len(starts) // 2]
+    return c0, step
+
+
+_LEDGER_SEPS = ('|', '｜', ')', '）', '/', ']', '」', '!', '(', '（', 'S', '$')
+_COMMA_NUM = r'\d{1,3}(?:,\d{3})+'
+
+
+def _ledger_uniq(values, limit):
+    seen, out = set(), []
+    for v in values:
+        if v is not None and v not in seen and (limit is None or 0 <= v <= limit):
+            seen.add(v)
+            out.append(v)
+    return out
+
+
+def _ledger_one(s):
+    """單一格字串（已去掉分隔符）的候選值。"""
+    s = re.sub(r'^[^\d]+', '', s)
+    truncated = bool(re.search(r'[,]$', s))
+    s = re.sub(r'[^\d]+$', '', s)
+    if not s or not re.fullmatch(r'[\d,]+', s):
+        return []
+    out = []
+    plain = s.replace(',', '')
+    if re.fullmatch(r'0+1?', plain):
+        out.append(0)                      # 「01」＝0＋右框線
+    if re.fullmatch(r'\d+(?:,\d{3})*', s):
+        out.append(int(plain))
+    if s.endswith('1') and re.fullmatch(_COMMA_NUM, s[:-1]):
+        out.append(int(s[:-1].replace(',', '')))
+    if ',' in s:
+        # 開頭多出的只可能是框線（1）或鄰格黏過來的 0；其他數字不可任意丟棄
+        for n in (3, 2, 1):
+            m = re.search(r'(\d{%d}(?:,\d{3})+)$' % n, s)
+            if m and m.start() > 0 and re.fullmatch(r'[01]+', s[:m.start()]):
+                out.append(int(m.group(1).replace(',', '')))
+    elif len(plain) >= 5:
+        # 沒讀到千分位的長數字：框線可能多一位在頭或尾（0882107、155690）
+        out.append(int(plain[:-1]))
+        if plain[0] in '01':
+            out.append(int(plain[1:]))
+    m = re.fullmatch(r'0*(\d{1,3}(?:,\d{3})*),(\d{1,2})', s)
+    if m:                                  # 末段被截斷（「12,34」）：補 0 成 12,340
+        out.append(int((m.group(1) + m.group(2).ljust(3, '0')).replace(',', '')))
+    if truncated or (',' in s and not re.search(_COMMA_NUM + '$', s)):
+        out.append(0)                      # 被截斷的殘字（「2.」）：容許為 0，由驗算決定
+    return out
+
+
+def _ledger_read(text, limit=None):
+    """
+    讀格內金額，回傳 (本格候選, 左鄰格候選)，皆依可信度排序。掃描清冊格線常被
+    讀進數字：千分位讀成「. : ，」、右框線變尾端 1（5,9621）、左框線變開頭 1
+    （155,690）、鄰格的 0 黏在前面（0101,480＝0｜101,480；0196,740＝0｜96,740）、
+    兩格黏成一個 token（34,755|38,948、4,00045,420）。無法單從字面判斷時列出
+    所有候選，由 _ledger_repair 用印列的加項合計／實領／扣項合計驗算挑選。
+    """
+    s = norm_text(text).replace(':', ',').replace('：', ',')
+    if s in _LEDGER_ZERO:
+        return [0], []
+    left = []
+    core = s.strip(''.join(_LEDGER_SEPS) + ' ')
+    for sep in _LEDGER_SEPS:
+        if sep in core:
+            parts = core.split(sep)
+            if len(parts) >= 2 and re.search(r'\d', parts[-2]):
+                left = _ledger_one(parts[-2])
+            core = parts[-1]
+    out = _ledger_one(core)
+    # 兩格金額直接黏在一起：拆成「左格＋本格」，兩段都需是合法千分位
+    c = re.sub(r'^[^\d]+', '', core)
+    c = re.sub(r'[^\d]+$', '', c)
+    for i in range(1, len(c) if re.fullmatch(r'[\d,]+', c) else 0):
+        a, b = c[:i], c[i:]
+        if re.fullmatch(_COMMA_NUM, a) and re.fullmatch(_COMMA_NUM, b):
+            out.insert(0 if not out or out[0] > 999999 else 1, int(b.replace(',', '')))
+            left.append(int(a.replace(',', '')))
+    return _ledger_uniq(out, limit), _ledger_uniq(left, limit)
+
+
+def _ledger_cands(text, limit=None):
+    return _ledger_read(text, limit)[0]
+
+
+def _ledger_num(text):
+    """單一最可能的值與是否經過修正（供總計列與測試使用）。"""
+    c = _ledger_cands(text)
+    if not c:
+        return None, False
+    s = re.sub(r'[^\d]', '', norm_text(text))
+    return c[0], str(c[0]) != s
+
+
+def _ledger_cell(t, c0, step):
+    right = float(t['x']) + float(t.get('w', 0)) / 2
+    return int(round((right - (c0 - step / 2)) / step)) - 1
+
+
+# Vision 偶爾把繁體姓名讀成簡體字形；只收常見姓氏與人名用字的一對一對照。
+_NAME_S2T = str.maketrans(
+    '黄许陈张刘吴郑杨赵罗谢苏叶庄钟卢萧冯邓韩颜赖简汤涂蓝侯龙杰伟丽华荣娟婷'
+    '玲瑶兰凤静惠贞贤铭锋辉宁严邱贺萍琼东隆鸿钰馨仪爱颖凯岚',
+    '黃許陳張劉吳鄭楊趙羅謝蘇葉莊鍾盧蕭馮鄧韓顏賴簡湯塗藍侯龍傑偉麗華榮娟婷'
+    '玲瑤蘭鳳靜惠貞賢銘鋒輝寧嚴邱賀萍瓊東隆鴻鈺馨儀愛穎凱嵐')
+
+
+def _big5_ok(ch):
+    try:
+        ch.encode('cp950')
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
+def _ledger_name(tokens, y, name_x):
+    """
+    姓名欄（右鄰「在職日數」欄的「全月」也是兩個中文字，需排除）。整頁與分塊
+    多次辨識的讀法逐字投票（同長度的讀法每個位置取票數最高的字；同票時以
+    繁體字、再以先出現的整頁讀法為準），職稱黏在姓名前面時取最後一個職稱字之後。
+    """
+    readings = []
+    for t in tokens:
+        if abs(t.get('y', 0) - y) > 0.012 or not name_x - 0.07 <= t.get('x', 0) <= name_x + 0.017:
+            continue
+        for run in re.findall(r'[\u3400-\u4dbf\u4e00-\u9fff]{2,12}', t.get('text', '')):
+            cut = max((run.rfind(w) + len(w) for w in TITLE_WORDS + _LEDGER_TITLE_EXTRA
+                       if w in run), default=0)
+            rest = run[cut:]
+            piece = (rest if len(rest) <= 4 else rest[-3:]).translate(_NAME_S2T)
+            if piece in _LEDGER_NOT_NAME or not _grid_is_name(piece):
+                continue
+            w = float(t.get('conf', 0)) + 0.2 - 3 * abs(t['x'] - name_x) - (0.15 if cut else 0)
+            readings.append((piece, max(w, 0.05), len(readings), float(t.get('conf', 0))))
+    if not readings:
+        return '', 0.0
+    by_len = {}
+    for piece, w, _, _ in readings:
+        by_len[len(piece)] = by_len.get(len(piece), 0) + w
+    # 兩字讀法多半是三字姓名漏一字：只要有三字讀法就以三字為準
+    if 3 in by_len and 2 in by_len:
+        by_len[3] += by_len.pop(2)
+    size = max(by_len, key=by_len.get)
+    same = [r for r in readings if len(r[0]) == size]
+    chars = []
+    for i in range(size):
+        score = {}
+        for piece, w, order, _ in same:
+            ch = piece[i]
+            prev = score.get(ch, (0, 0, -order))
+            score[ch] = (prev[0] + w, prev[1], max(prev[2], -order))
+        for ch in score:
+            total, _, first = score[ch]
+            score[ch] = (round(total, 6), _big5_ok(ch), first)
+        chars.append(max(score, key=score.get))
+    name = ''.join(chars)
+    if not _grid_is_name(name):
+        name = max(same, key=lambda r: (r[1], -r[2]))[0]
+    conf = max((r[3] for r in same if r[0] == name), default=min(r[3] for r in same))
+    return name, conf
+
+
+def _ledger_title(tokens, y, name_x, name):
+    """職稱欄：多次辨識取票數最高的單一讀法（不串接）。"""
+    votes = {}
+    for t in tokens:
+        if abs(t.get('y', 0) - y) > 0.013 or not name_x - 0.075 <= t.get('x', 0) < name_x - 0.012:
+            continue
+        for run in re.findall(r'[\u4e00-\u9fff]+', t.get('text', '')):
+            if name and name in run:
+                run = run.replace(name, '')
+            if len(run) >= 2:
+                known = any(w in run for w in TITLE_WORDS + _LEDGER_TITLE_EXTRA)
+                votes[run] = votes.get(run, 0) + float(t.get('conf', 0)) + 0.2 + (1 if known else 0)
+    return max(votes, key=votes.get) if votes else ''
+
+
+def _ledger_rows(tokens, c0, step, header_y):
+    """人員列的 y：實領／薪俸／加項合計／扣項合計任兩格有金額即為一列。"""
+    cands = []
+    for t in tokens:
+        if t.get('y', 0) <= header_y + 0.02:
+            continue
+        cell = _ledger_cell(t, c0, step)
+        if not 0 <= cell < len(LEDGER_COLUMNS):
+            continue
+        v, _ = _ledger_num(t.get('text', ''))
+        if v is not None and v >= 1000:
+            cands.append(float(t['y']))
+    cands.sort()
+    clusters = []
+    for y in cands:
+        # 以群首距離分群（不串鏈），列距約 0.026，避免相鄰兩列被串成一群
+        if clusters and y - clusters[-1][0] <= 0.011:
+            clusters[-1].append(y)
+        else:
+            clusters.append([y])
+    # 同一列被拆成兩群（多次辨識的 y 略有差異）：中心距離小於七成列距就合併
+    merged = []
+    for c in clusters:
+        if merged and sum(c) / len(c) - sum(merged[-1]) / len(merged[-1]) < 0.018:
+            merged[-1].extend(c)
+        else:
+            merged.append(list(c))
+    return [sorted(c)[len(c) // 2] for c in merged if len(c) >= 2]
+
+
+def _ledger_skew(tokens):
+    """
+    掃描歪斜：此版型一列橫跨整頁，頁面稍微旋轉時同一列左右兩端的 y 可差到
+    將近半列（實測左端比右端低約 0.02）。以投影法找出使各列最「集中」的斜率
+    （y 隨 x 的變化），回傳斜率；資料太少回傳 0。
+    """
+    pts = [(float(t['x']), float(t['y'])) for t in tokens
+           if _ledger_cands(t.get('text', ''))]
+    if len(pts) < 40:
+        return 0.0
+    best = (None, 0.0)
+    for i in range(-80, 81):
+        b = i * 0.0005
+        bins = {}
+        for x, y in pts:
+            k = int(round((y - b * (x - 0.5)) / 0.002))
+            bins[k] = bins.get(k, 0) + 1
+        score = sum(c * c for c in bins.values())
+        if best[0] is None or score > best[0] or (score == best[0] and abs(b) < abs(best[1])):
+            best = (score, b)
+    return best[1]
+
+
+def _ledger_deskew(tokens):
+    b = _ledger_skew(tokens)
+    if not b:
+        return tokens
+    return [dict(t, y=float(t['y']) - b * (float(t['x']) - 0.5)) for t in tokens]
+
+
+def _ledger_parse_pages(rows):
+    pages = _page_groups(rows)
+    people, totals = [], []
+    for pno in sorted(pages):
+        if _ledger_header_ys(pages[pno]) is None:
+            continue
+        tokens = _ledger_deskew([t for r in pages[pno] for t in r])
+        header_y = _ledger_header_ys(group_rows(tokens))
+        if header_y is None:
+            continue
+        grid = _ledger_grid(tokens, header_y)
+        if not grid:
+            continue
+        c0, step = grid
+        name_x = next((float(t['x']) for t in tokens if abs(t['y'] - header_y) < 0.03
+                       and norm_text(t.get('text', '')) == '姓名'), c0 - 1.85 * step)
+        for order, y in enumerate(_ledger_rows(tokens, c0, step, header_y)):
+            near = [t for t in tokens if abs(t['y'] - y) <= 0.0105]
+            left = ''.join(norm_text(t.get('text', '')) for t in near
+                           if t['x'] < c0 - step / 2)
+            cells, used = {}, {}
+            is_total = bool(re.search(r'總計|小計|合計|\d+人', left))
+            limit = None if is_total else 600000
+            reads = []
+            for t in near:
+                cell = _ledger_cell(t, c0, step)
+                if not 0 <= cell < len(LEDGER_COLUMNS):
+                    continue
+                here, before = _ledger_read(t.get('text', ''), limit)
+                digits = re.sub(r'[^\d]', '', norm_text(t['text']))
+                base = float(t.get('conf', 0)) - 2 * abs(float(t['y']) - y)
+                if here:
+                    fixed = len(here) > 1 or str(here[0]) != (digits.lstrip('0') or '0')
+                    reads.append((cell, here, base - (0.3 if fixed else 0), t, fixed))
+                if before and cell >= 1:
+                    reads.append((cell - 1, before, base - 0.5, t, True))
+            # 同一格有多個 token（整頁＋分塊多次辨識）：依可信度合併候選
+            for cell, vals, score, t, fixed in sorted(reads, key=lambda r: -r[2]):
+                key = LEDGER_COLUMNS[cell]
+                if key not in cells:
+                    cells[key] = list(vals)
+                    used[key] = (t, score, fixed)
+                else:
+                    cells[key] += [v for v in vals if v not in cells[key]]
+            # 薪資項目不會是 1～99 元（多半是框線或殘字），單格也不會超過 20 萬
+            # （超過多半是兩格黏在一起），不列為候選
+            for k in LEDGER_PAY_KEYS:
+                if k in cells:
+                    cells[k] = [v for v in cells[k] if not 0 < v < 100
+                                and (is_total or v <= LEDGER_KEY_MAX.get(k, LEDGER_PAY_MAX))]
+                    if not cells[k]:
+                        del cells[k]
+                        used.pop(k, None)
+            # 實領、薪俸、加項合計不可能是 0（0 只會是鄰格黏過來或截斷殘字）
+            for k in ('實領', '薪俸', '加項合計'):
+                if k in cells:
+                    cells[k] = [v for v in cells[k] if v] or None
+                    if cells[k] is None:
+                        del cells[k]
+                        used.pop(k, None)
+            cells = {k: v[:5] for k, v in cells.items()}
+            row = {'_values': {k: c[0] for k, c in cells.items()}, '_cands': cells,
+                   '_tokens': {k: u[0] for k, u in used.items()},
+                   '_fixed': {k for k, u in used.items() if u[2]},
+                   '_page': pno, '_order': order}
+            if is_total:
+                totals.append(row)
+                continue
+            name, conf = _ledger_name(near, y, name_x)
+            row.update({'姓名': name, '_name_conf': conf,
+                        '職稱': _ledger_title(near, y, name_x, name)})
+            people.append(row)
+    return people, totals
+
+
+def _ledger_sum(values):
+    return sum(values.get(k) or 0 for k in LEDGER_PAY_KEYS)
+
+
+def _ledger_repair(p, observed=None):
+    """
+    用印列金額驗算挑出各格的正確讀值，只採有算術證據者：
+      檢查一：薪資項目加總＝加項合計；檢查二：加項合計＝實領＋扣項合計。
+    1. 各格有多個候選值（框線雜訊、黏格）時，選出同時通過最多檢查、改動最少的組合；
+    2. 仍差一格漏讀時，差額須通過檢查二，或等於同份文件該欄出現過的金額，才補上。
+    回傳 (應發, 來源 'printed'|'check'|None)。
+    """
+    from itertools import product
+    cands = p.get('_cands') or {k: [v] for k, v in p['_values'].items()}
+    keys = [k for k in LEDGER_PAY_KEYS + ('加項合計', '實領', '扣項合計') if k in cands]
+    multi = [k for k in keys if len(cands[k]) > 1]
+    if len(multi) > 6:
+        multi = multi[:6]
+    best = None
+    for combo in product(*[range(len(cands[k])) for k in multi]):
+        v = dict(p['_values'])
+        for k, i in zip(multi, combo):
+            v[k] = cands[k][i]
+        gross, net, ded = v.get('加項合計'), v.get('實領'), v.get('扣項合計')
+        check = net + ded if net is not None and ded is not None else None
+        total = gross if gross is not None else check
+        score = 0
+        if total and _ledger_sum(v) == total:
+            score += 2
+        if gross is not None and check is not None and gross == check:
+            score += 1
+        rank = (score, -sum(combo))
+        if best is None or rank > best[0]:
+            best = (rank, v)
+    if best:
+        if best[1] != p['_values']:
+            p['_repaired'] = True
+        p['_values'] = best[1]
+    v = p['_values']
+    gross, net, ded = v.get('加項合計'), v.get('實領'), v.get('扣項合計')
+    check = net + ded if net is not None and ded is not None else None
+    source = 'printed' if gross is not None else None
+    if gross is None and check:
+        gross, source = check, 'check'
+    elif gross is not None and check is not None and gross != check \
+            and _ledger_sum(v) == check:
+        gross, source = check, 'check'      # 加項合計格讀錯
+    if not gross or _ledger_sum(v) == gross:
+        return gross, source
+    trusted = check is not None and check == gross
+    missing = [k for k in LEDGER_PAY_KEYS if v.get(k) is None]
+    diff = gross - _ledger_sum(v)
+    observed = observed or {}
+    target = None
+    if diff > 0:
+        seen = [k for k in missing if diff in observed.get(k, ())]
+        if len(missing) == 1 and (trusted or seen):
+            target = missing[0]
+        elif len(seen) == 1:
+            target = seen[0]
+        # 多格同時漏讀且差額不是任何一欄見過的金額：無法判斷拆分，不補（送人工確認）。
+    if target is None and trusted:
+        # 加項合計已由「實領＋扣項」雙重確認，而薪資項目中只有一格是黏格／框線
+        # 修正過的讀值：差額只可能出在這一格。
+        shaky = [k for k in LEDGER_PAY_KEYS if k in p.get('_fixed', ())]
+        if len(shaky) == 1 and (v.get(shaky[0]) or 0) + diff > 0:
+            target = shaky[0]
+    if target is not None:
+        value = (v.get(target) or 0) + diff
+        if 100 <= value <= LEDGER_KEY_MAX.get(target, LEDGER_PAY_MAX):
+            v[target] = value
+            p['_repaired'] = True
+    return gross, source
+
+
+def ledger_page_checks(tokens_or_rows):
+    """驗證用：每頁解析人數與各欄加總對印列總計／頁小計的差額（不含姓名）。"""
+    rows = tokens_or_rows
+    if rows and isinstance(rows[0], dict):
+        rows = group_rows(rows)
+    people, totals = _ledger_parse_pages(rows)
+    observed = _ledger_observed(people)
+    for p in people:
+        _ledger_repair(p, observed)
+    out = []
+    for pno in sorted({p['_page'] for p in people}):
+        pp = [p for p in people if p['_page'] == pno]
+        sub = [t for t in totals if t['_page'] == pno]
+        diffs = {}
+        if sub:
+            target = sub[-1]['_values']     # 頁底「頁小計」
+            for key in LEDGER_PAY_KEYS + ('加項合計',):
+                if key in target:
+                    got = sum(p['_values'].get(key) or 0 for p in pp)
+                    if got != target[key]:
+                        diffs[key] = target[key] - got
+        out.append({'page': pno, 'people': len(pp), 'has_subtotal': bool(sub),
+                    'diffs': diffs})
+    return out
+
+
+def _ledger_observed(people):
+    """同份文件各薪資欄「字面無歧義」讀到的金額（補漏讀時的佐證）。"""
+    seen = {k: set() for k in LEDGER_PAY_KEYS}
+    for p in people:
+        for k in LEDGER_PAY_KEYS:
+            c = (p.get('_cands') or {}).get(k)
+            if c and len(c) == 1 and c[0] and k not in p['_fixed']:
+                seen[k].add(c[0])
+    return seen
+
+
+def parse_horizontal_ledger(rows):
+    people, _ = _ledger_parse_pages(rows)
+    observed = _ledger_observed(people)
+    clean = []
+    for p in people:
+        gross, source = _ledger_repair(p, observed)
+        v = p['_values']
+        g = lambda k: v.get(k) or 0
+        computed = _ledger_sum(v)
+        # 第二道驗算：實領與扣項合計都讀到時，兩者之和必須等於加項合計；
+        # 沒有可讀姓名的列（姓名漏讀、或總計列標籤漏讀）也不可判為相符。
+        net, ded = v.get('實領'), v.get('扣項合計')
+        second_ok = net is None or ded is None or net + ded == gross
+        named = bool(p['姓名']) and p['姓名'] not in _LEDGER_NOT_NAME
+        confs = [p['_name_conf'] if p['姓名'] else 0.0]
+        confs += [float(t.get('conf', 0)) for k, t in p['_tokens'].items()
+                  if k in LEDGER_PAY_KEYS or k == '加項合計']
+        if p.get('_repaired') or p['_fixed'] & set(LEDGER_PAY_KEYS + ('加項合計',)):
+            confs.append(0.5)
+        clean.append({
+            '姓名': p['姓名'], '職稱': p['職稱'],
+            '身分證': '', '身分證有效': False,
+            '薪俸': g('薪俸'),
+            '主管加給': g('主管加給'),
+            '專業加給': g('專業加給'),          # 工作或專業補助費（含學術研究費）
+            '導師特教': g('_導師') + g('_特教'),
+            # 教保費依既有慣例只計入其他加給；其他補發另以「補發」與 AF 補發金額比對。
+            '其他加給': g('_補發') + g('_教保'),
+            '補發': g('_補發'),
+            '應發金額': gross or computed,
+            '應發金額推算': not gross,
+            '加總相符': (bool(gross) and computed == gross and g('薪俸') > 0
+                         and second_ok and named),
+            '加總差額': (gross - computed) if gross else None,
+            '最低信心': round(min(confs), 3),
+        })
+    return clean
+
+
 # ── 主流程 ──────────────────────────────────────────────
 
 def _parse_as(rows, layout):
@@ -1982,6 +2535,10 @@ def _parse_as(rows, layout):
         return parse_horizontal_two_line(rows)
     if _is_grid_two_line(rows):
         return parse_horizontal_grid(rows)
+    if _is_ledger(rows):
+        ledger = parse_horizontal_ledger(rows)
+        if ledger:
+            return ledger
     return _parse_horizontal_rows(rows)
 
 
@@ -2155,6 +2712,7 @@ LAYOUT_VARIANTS = {
     'horizontal_grid': 'A4 橫式每人兩行、上下欄共用表頭',
     'vertical_column': '直式一人一欄（左側項目名稱，上方序號／身分證／姓名／職稱）',
     'horizontal_row': '橫式一人一列',
+    'horizontal_ledger': 'A4 橫式薪資印領清冊（一人一列含扣項與機關補助款，實領金額在前）',
 }
 
 
@@ -2169,6 +2727,8 @@ def layout_variant(tokens):
         code = 'horizontal_two_line'
     elif _is_grid_two_line(rows):
         code = 'horizontal_grid'
+    elif _is_ledger(rows):
+        code = 'horizontal_ledger'
     elif detect_layout(rows) == 'vertical':
         code = 'vertical_column'
     else:
@@ -2183,14 +2743,22 @@ def layout_variant(tokens):
             traits.append('含總計表頁')
         if any(_vertical_header_merged(pr[:12]) for pr in pages.values()):
             traits.append('部分頁表頭歪斜')
+    if code == 'horizontal_ledger':
+        # 彙總表頁：沒有人員表頭，但列標題有實領金額／扣項合計等
+        if any(_ledger_header_ys(pr) is None and sum(
+                any(s in norm_text(row_text(r)) for s in ('實領金額', '扣項合計', '加項合計'))
+                for r in pr) >= 2 for pr in pages.values()):
+            traits.append('含總計表頁')
     kinds = set()
     for pr in pages.values():
         heads, fields, _ = _layout_evidence(pr)
         if heads or fields:
             kinds.add(detect_layout(pr))
-    if len(kinds) > 1:
+    if len(kinds) > 1 and code != 'horizontal_ledger':
         traits.append('直式／橫式混合頁')
-    if code == 'horizontal_row':
+    if code == 'horizontal_ledger':
+        has_bufa = True          # 固定有「其他補發」欄
+    elif code == 'horizontal_row':
         has_bufa = any(cols for _, _, cols in _horizontal_headers(rows))
     else:
         has_bufa = any(_row_label(r) in BUFA_LABELS for r in rows)
@@ -2209,7 +2777,7 @@ STYLE_TRAITS = {
     'needs_upscale_4x': '需 4 倍放大辨識',
     'has_bufa_column': '含補發薪資欄',
 }
-OCR_STRATEGIES = ('full', 'tiled_2x2', 'upscale_4x')
+OCR_STRATEGIES = ('full', 'tiled_2x2', 'upscale_4x', 'tiled_3x2')
 _TRAIT_FROM_LABEL = {v: k for k, v in STYLE_TRAITS.items()}
 
 
@@ -2217,7 +2785,8 @@ def style_layout(style):
     """版型代碼 → 解析器的直式／橫式候選。未知代碼回傳 None。"""
     return {'vertical_column': 'vertical', 'horizontal_row': 'horizontal',
             'horizontal_two_line': 'horizontal',
-            'horizontal_grid': 'horizontal'}.get(style)
+            'horizontal_grid': 'horizontal',
+            'horizontal_ledger': 'horizontal'}.get(style)
 
 
 def style_profile(tokens, ocr_strategy='full'):
@@ -2228,7 +2797,7 @@ def style_profile(tokens, ocr_strategy='full'):
     """
     code, label, trait_labels = layout_variant(tokens)
     traits = [_TRAIT_FROM_LABEL[t] for t in trait_labels if t in _TRAIT_FROM_LABEL]
-    if ocr_strategy == 'tiled_2x2':
+    if ocr_strategy in ('tiled_2x2', 'tiled_3x2'):
         traits.append('needs_tiled_ocr')
     elif ocr_strategy == 'upscale_4x':
         traits.append('needs_upscale_4x')
@@ -2255,6 +2824,13 @@ def style_hint_layout(hint, fallback=None):
 def parse_tokens(tokens, preferred_layout=None):
     tokens = _unflip_pages(tokens)
     rows = group_rows(tokens)
+    if _is_ledger(rows):
+        # 薪資印領清冊（一人一列含扣項）：結構明確，只用專用解析；不跑直式候選，
+        # 也不做逐頁混合（彙總表頁沒有人員）。
+        # 偵測到表頭卻解析不到任何人（例如表頭錨點不足）時退回一般流程。
+        ledger = _drop_label_rows(parse_horizontal_ledger(rows))
+        if ledger:
+            return ledger, 'horizontal'
     detected = detect_layout(rows)
     candidates = {
         'vertical': _parse_as(rows, 'vertical'),

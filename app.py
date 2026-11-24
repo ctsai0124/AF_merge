@@ -22,8 +22,8 @@ app.config.update(
     SESSION_COOKIE_SAMESITE='Lax',  # 降低跨站請求偽造（CSRF）風險
 )
 
-APP_VERSION = 'v1.3.25'
-BUILD_VERSION = '2026.11.24.4'
+APP_VERSION = 'v1.3.26'
+BUILD_VERSION = '2026.11.24.5'
 
 
 def _is_sensitive_response(path):
@@ -472,12 +472,14 @@ STYLE_LABELS = {
     'horizontal_row': '橫式一人一列',
     'horizontal_two_line': 'A3 橫式雙行',
     'horizontal_grid': 'A4 橫式每人兩行共用表頭',
+    'horizontal_ledger': 'A4 橫式薪資印領清冊（一人一列含扣項）',
 }
 STYLE_LAYOUT = {'vertical_column': 'vertical', 'horizontal_row': 'horizontal',
-                'horizontal_two_line': 'horizontal', 'horizontal_grid': 'horizontal'}
+                'horizontal_two_line': 'horizontal', 'horizontal_grid': 'horizontal',
+                'horizontal_ledger': 'horizontal'}
 STYLE_TRAITS = ('has_summary_pages', 'skewed_header', 'mixed_orientation',
                 'needs_tiled_ocr', 'needs_upscale_4x', 'has_bufa_column')
-OCR_STRATEGIES = ('full', 'tiled_2x2', 'upscale_4x')
+OCR_STRATEGIES = ('full', 'tiled_2x2', 'upscale_4x', 'tiled_3x2')
 
 
 def clean_style_profile(p):

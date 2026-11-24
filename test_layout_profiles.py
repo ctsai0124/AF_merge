@@ -49,6 +49,18 @@ class LayoutProfileStyleTests(unittest.TestCase):
         loaded = A.load_layout_profile('999000002Y')
         self.assertEqual(loaded['style'], 'vertical_column')
 
+    def test_ledger_style_and_tiled_3x2_strategy_are_recorded(self):
+        # v1.3.26：阿蓮國小型 A4 橫式薪資印領清冊
+        A.save_layout_profile('999000005Y', 'horizontal', 1.0, {
+            'style': 'horizontal_ledger',
+            'traits': ['has_bufa_column', 'has_summary_pages', 'needs_tiled_ocr'],
+            'ocr_strategy': 'tiled_3x2'})
+        rec = self.read()['999000005Y']
+        self.assertEqual(rec['style'], 'horizontal_ledger')
+        self.assertEqual(rec['style_label'], A.STYLE_LABELS['horizontal_ledger'])
+        self.assertEqual(rec['ocr_strategy'], 'tiled_3x2')
+        self.assertEqual(rec['traits'], ['has_bufa_column', 'has_summary_pages', 'needs_tiled_ocr'])
+
     def test_style_contradicting_layout_is_not_saved(self):
         A.save_layout_profile('999000003Y', 'vertical', 0.9,
                               {'style': 'horizontal_grid', 'ocr_strategy': 'tiled_2x2'})

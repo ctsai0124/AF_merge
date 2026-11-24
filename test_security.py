@@ -18,8 +18,8 @@ class SecurityAndUiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         page = response.get_data(as_text=True)
-        self.assertIn('系統版本：v1.3.25', page)
-        self.assertIn('版本 2026.11.24.4', page)
+        self.assertIn('系統版本：v1.3.26', page)
+        self.assertIn('版本 2026.11.24.5', page)
         self.assertIn('<main class="container">', page)
         self.assertNotIn('site-counter.js', page)
 

@@ -228,7 +228,7 @@ class EndpointTests(unittest.TestCase):
     @patch('app.bump_counter', return_value={'visits': 1, 'sorts': 0, 'compares': 0})
     def test_home_has_zip_import_guide_and_bookmarklet(self, _c, _a):
         page = self.client.get('/', headers=self.h).get_data(as_text=True)
-        self.assertIn('/static/af_import.js?v=v1.3.25', page)
+        self.assertIn('/static/af_import.js?v=v1.3.26', page)
         self.assertIn('AF:各機關學校用人費用管理資訊系統', page)
         self.assertIn('https://fund.dgpa.gov.tw/system/WebMain.aspx', page)
         self.assertIn('校對清冊(A)', page)

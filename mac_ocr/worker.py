@@ -7,7 +7,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CFG = json.load(open(os.path.join(HERE, 'config.json'), encoding='utf-8'))
 SERVER, KEY = CFG['server'].rstrip('/'), CFG['key']
 POLL_MIN, POLL_MAX = 3, 60
-WORKER_VERSION = 'v22'
+WORKER_VERSION = 'v23'
 
 sys.path.insert(0, HERE)
 from parse_tokens import (
@@ -16,6 +16,7 @@ from parse_tokens import (
     _suspicious_name,
     _is_two_line_horizontal,
     _is_grid_two_line,
+    _is_ledger,
     group_rows,
     merge_token_sets,
     ensemble_people,
@@ -126,6 +127,20 @@ def ocr(pdf_bytes, preferred_layout=None, job_id='', style_hint=None):
             tokens.extend(t for t in standard
                           if t.get('x', 0) < 0.16
                           or 0.19 <= t.get('x', 0) <= 0.46)
+            people, layout = parse_all(tokens, preferred_layout=preferred_layout)
+        elif _is_ledger(rows):
+            # v23：A4 橫式薪資印領清冊（一人一列 30 個金額欄，字小、格線密）。整頁
+            # 辨識常整格漏讀或黏格，再以 5 倍 3×2、3 倍與 4 倍 2×2 分塊各辨識一次；
+            # 全部結果交給解析器（不去重），由各格候選值與印列加項合計／實領／
+            # 扣項合計驗算挑選，姓名逐字投票。阿蓮國小實檔約 60 秒。
+            strategy = 'tiled_3x2'
+            extra = []
+            for scale, tiles in ((5, '3x2'), (3, '2x2'), (4, '2x2')):
+                try:
+                    extra.extend(recognize(scale, tiles))
+                except Exception as e:
+                    print(f'  分塊 {scale}倍 {tiles} 辨識失敗，略過：{e}', flush=True)
+            tokens = tokens + extra
             people, layout = parse_all(tokens, preferred_layout=preferred_layout)
         else:
             people, layout = parse_all(tokens, preferred_layout=preferred_layout)
