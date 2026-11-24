@@ -8,6 +8,12 @@
 .afi-guide-body{padding:2px 12px 10px}
 .afi-guide ol{margin:4px 0 6px 18px;padding:0;line-height:1.7}
 .afi-guide code{background:#fff;border:1px solid #d6dee8;padding:0 4px;font-size:12px;user-select:all;word-break:break-all;white-space:normal}
+.afi-guide code.afi-copy{position:relative;cursor:pointer;user-select:none;white-space:nowrap}
+.afi-guide code.afi-copy:hover,.afi-guide code.afi-copy:focus-visible{border-color:#1a5c9c;background:#eef5fc;outline:none}
+.afi-copy-ico{width:12px;height:12px;margin-left:4px;vertical-align:-1px;fill:none;stroke:#1a5c9c;stroke-width:2}
+.afi-copied{position:absolute;left:50%;bottom:calc(100% + 4px);transform:translateX(-50%);padding:1px 6px;border-radius:3px;background:#2a6e3f;color:#fff;font:11px/1.6 sans-serif;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .15s}
+.afi-copied.err{background:#b00020}
+.afi-copied.show{opacity:1}
 .afi-guide a{color:#1a5c9c}
 .afi-warn{color:#8a5a00}
 .afi-onekey{margin-top:8px;padding:8px 10px;background:#fff;border:1px dashed #1a3a5c}
@@ -29,7 +35,7 @@
           （歡迎頁網址 <code>https://fund.dgpa.gov.tw/system/WebMain.aspx</code>，按「進入本系統」；登入後主畫面為 <code>https://fund.dgpa.gov.tw/system/CPA.aspx</code>。開放時間每日 7:00～19:00）</li>
         <li>兼辦多校時，先在右上角「<b>兼辦機關</b>」切換到要處理的學校。</li>
         <li>左側選單「用人費用資料維護」→「資料校對及報表列印」→ 右下「<b>報表列印</b>」。</li>
-        <li>報表種類選「<b>校對清冊(A)</b>」，報表格式選 <b>EXCEL</b>，「身分證號密碼」欄填公版密碼 <code>{{ af_public_password }}</code>，按「下載報表」。</li>
+        <li>報表種類選「<b>校對清冊(A)</b>」，報表格式選 <b>EXCEL</b>，「身分證號密碼」欄填公版密碼 <code class="afi-copy" data-copy="{{ af_public_password }}" role="button" tabindex="0" title="點一下複製" aria-label="公版密碼 {{ af_public_password }}，點一下複製">{{ af_public_password }}<svg class="afi-copy-ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></code>（點一下即可複製），按「下載報表」。</li>
         <li>把下載的 <b>.zip</b> 直接拖到下方框內（不用解壓縮、不用轉檔），系統會自動解開。</li>
       </ol>
       <div class="afi-warn">公版密碼是公開的，只用來下載這份報表，請勿拿去當其他系統的密碼。</div>
@@ -67,6 +73,8 @@
     <label><input type="checkbox" id="afi-pw-remember" checked> 記在這台電腦的瀏覽器（不會存到伺服器）</label>
   </div>
 </template>
+{# v1.3.25：點一下複製公版密碼 #}
+<script src="/static/af_copy.js?v={{ app_version }}"></script>
 <script src="/static/af_import.js?v={{ app_version }}"></script>
 {# v1.3.23：依 AF 學校自動帶入該校固定清冊、AF／固定清冊不同校防呆 #}
 <script src="/static/af_school.js?v={{ app_version }}"></script>

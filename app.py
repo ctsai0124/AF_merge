@@ -22,8 +22,8 @@ app.config.update(
     SESSION_COOKIE_SAMESITE='Lax',  # 降低跨站請求偽造（CSRF）風險
 )
 
-APP_VERSION = 'v1.3.24'
-BUILD_VERSION = '2026.11.24.3'
+APP_VERSION = 'v1.3.25'
+BUILD_VERSION = '2026.11.24.4'
 
 
 def _is_sensitive_response(path):
