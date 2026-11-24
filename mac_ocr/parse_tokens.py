@@ -99,6 +99,11 @@ def repair_id(s):
     替代字母能通過檢查碼時才採用，否則原樣回傳（不猜測數字部分）。
     """
     s = re.sub(r'\s', '', (s or '')).upper()
+    # 框線／污點常被讀成夾在字號中的「:」「|」「.」等（例：S2:20744494）。
+    # 去掉後恰為合法字號且檢查碼正確時才採用，不改動任何英數字。
+    bare = re.sub(r"[:;|.,'`·]", '', s)
+    if bare != s and len(bare) == 10 and valid_id(bare):
+        return bare
     if len(s) != 10 or valid_id(s) or not s[1:].isdigit():
         return s
     fixes = [c + s[1:] for c in _ID_FIRST_LOOKALIKE.get(s[0], '')
@@ -769,6 +774,33 @@ def _vertical_block(rows):
             assign_num(r, '_x_' + label)
         elif label in FIELD_ALIAS:
             assign_num(r, FIELD_ALIAS[label])
+    # 表頭歪斜時（例：職稱下多一行「薦任七等功六級（590）」），部分人員的
+    # 身分證字號 token 會被分到「序號」列而非「身分證字號」列。對仍無有效字號
+    # 的人員，在本俸列以上的表頭區找「依姓名欄座標落在此人欄內」且檢查碼正確
+    # 的字號；必須唯一且未被他人使用才補上。
+    def _valid_pid(c):
+        pid = repair_id(c.get('身分證'))
+        return pid if valid_id(pid) else ''
+    lacking = [c for c in cols if not _valid_pid(c)]
+    if lacking:
+        taken = {_valid_pid(c) for c in cols} - {''}
+        found = {}
+        for r in rows[:base_idx]:
+            for t in r:
+                if t.get('x', 0) < 0.08:
+                    continue
+                pid = repair_id(t.get('text'))
+                if not valid_id(pid) or pid in taken:
+                    continue
+                best = min(cols, key=lambda c: abs(t['x'] - c['x']))
+                if abs(t['x'] - best['x']) <= tol:
+                    found.setdefault(id(best), set()).add(pid)
+        for c in lacking:
+            got = found.get(id(c)) or set()
+            if len(got) == 1:
+                c['身分證'] = got.pop()
+                taken.add(c['身分證'])
+
     for c in cols:
         for lab in DEDUCT_LABELS:
             if '_x_' + lab in c:

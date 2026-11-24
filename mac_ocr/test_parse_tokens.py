@@ -475,6 +475,28 @@ class VerticalColumnHeaderTests(unittest.TestCase):
         # 無法唯一還原者原樣保留
         self.assertEqual(parse_tokens.repair_id('A123'), 'A123')
 
+    def test_id_with_gridline_punctuation_repaired(self):
+        # 框線被讀成夾在字號中的冒號（S2:20744494 型）：去掉後檢查碼正確才採用
+        good = self.people()
+        noisy = good[1]['id'][:2] + ':' + good[1]['id'][2:]
+        people, _ = parse_tokens.parse_tokens(self.build(id_override={1: noisy}))
+        self.check(people)
+        self.assertEqual(parse_tokens.repair_id(noisy), good[1]['id'])
+        # 去掉雜訊後檢查碼仍不符：原樣保留，不猜
+        wrong = good[1]['id'][:9] + str((int(good[1]['id'][9]) + 1) % 10)
+        self.assertEqual(parse_tokens.repair_id(wrong[:2] + ':' + wrong[2:]),
+                         wrong[:2] + ':' + wrong[2:])
+
+    def test_id_grouped_into_serial_row_is_recovered(self):
+        # 寶來國中型：某欄表頭上移，字號被分到「序號」列而非「身分證字號」列
+        good = self.people()
+        toks = self.build()
+        for i in (0, 2):
+            t = next(t for t in toks if t['text'] == good[i]['id'])
+            t['y'] = 0.103
+        people, _ = parse_tokens.parse_tokens(toks)
+        self.check(people)
+
     def test_split_total_does_not_shift_people_into_subtotal(self):
         toks = self.build()
         # 第二人的應發數合計被拆成「50,」「500_」兩段

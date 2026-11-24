@@ -22,8 +22,8 @@ app.config.update(
     SESSION_COOKIE_SAMESITE='Lax',  # 降低跨站請求偽造（CSRF）風險
 )
 
-APP_VERSION = 'v1.3.22'
-BUILD_VERSION = '2026.11.24.1'
+APP_VERSION = 'v1.3.23'
+BUILD_VERSION = '2026.11.24.2'
 
 
 def _is_sensitive_response(path):
@@ -31,7 +31,7 @@ def _is_sensitive_response(path):
     prefixes = (
         '/process', '/compare-pdf', '/cross-check', '/categories/', '/ocr/',
         '/download-simple', '/download-result', '/download-category-audit',
-        '/download-audit', '/print-', '/settings/', '/stats/diag', '/af/unzip',
+        '/download-audit', '/print-', '/settings/', '/stats/diag', '/af/',
     )
     return any(path.startswith(prefix) for prefix in prefixes)
 
@@ -1357,6 +1357,47 @@ def af_unzip():
     resp.headers['X-AF-Filename'] = urllib.parse.quote(name, safe='')
     resp.headers['X-AF-Password'] = used
     return resp
+
+
+# v1.3.23：AF 上傳後判定學校，讓前端自動帶入「該校」的固定清冊，並在 AF 與
+# 固定清冊不同校時警告。只回傳機關代碼／校名／人數比率，不回傳姓名或身分證；
+# 只讀不寫（不更新學校指紋或任何記憶檔）。
+import roster_school
+
+
+@app.route('/af/identify', methods=['POST'])
+def af_identify():
+    f = request.files.get('af')
+    if not f or not f.filename:
+        return jsonify({'error': '缺少 AF 檔案'}), 400
+    af_bytes = f.read()
+    ident = resolve_school(f.filename, af_bytes)
+    key = str(ident.get('key') or '')
+    code = key.upper() if roster_school.CODE_FULL_RE.match(key) else ''
+    name = ident.get('school_name') or (lookup_school(code)[0] if code else '')
+    try:
+        schools = json.loads(request.form.get('schools') or '[]')
+    except ValueError:
+        schools = []
+    if not isinstance(schools, list):
+        schools = []
+    out = {
+        'code': code, 'school_name': name or '',
+        'source': ident.get('source', ''),
+        'source_label': SID.SOURCE_LABELS.get(ident.get('source'), ''),
+        'account_school_id': roster_school.match_account_school(code, name, schools[:200]),
+        'overlap': None,
+    }
+    roster_f = request.files.get('roster')
+    if roster_f and roster_f.filename:
+        try:
+            roster_df = read_sheet(roster_f.read(), roster_f.filename, 'input',
+                                   fallback_to_first=True)
+            af_df = read_sheet(af_bytes, f.filename, 0)
+            out['overlap'] = roster_school.roster_overlap(roster_df, af_df, PERSON_ID_COLS)
+        except Exception:
+            out['overlap_error'] = '無法讀取固定清冊或 AF，未比對兩份檔案是否為同一所學校'
+    return jsonify(out)
 
 
 @app.route('/process', methods=['POST'])
