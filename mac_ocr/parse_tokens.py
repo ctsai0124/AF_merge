@@ -42,8 +42,16 @@ FIELD_ALIAS = {
     '補發職務加給': '其他加給',
     '補發導師費': '其他加給',
     '特教加給差額': '其他加給',
+    # v1.3.24：晉級等「補發」欄（三侯：補發薪資）。計入應發驗算，另以「補發」
+    # 欄位單獨回報，與 AF 的補發金額比對；絕不併入導師／特教。
+    '補發薪資': '其他加給', '補發薪俸': '其他加給', '補發本俸': '其他加給',
+    '本俸補發': '其他加給', '補發薪津': '其他加給', '補發金額': '其他加給',
     '應發數合計': '應發金額', '應發金額': '應發金額', '小計': '應發金額',
 }
+
+# 補發型欄名（直式列標題、橫式表頭）。補發職務加給、補發導師費等單項補發
+# 維持原本只計入其他加給（不另外比對）。
+BUFA_LABELS = ('補發薪資', '補發薪俸', '補發本俸', '本俸補發', '補發薪津', '補發金額')
 
 # 直式項目名稱中，代表「自應發扣除」的列；不論印成正數或負數都以負值計入。
 DEDUCT_LABELS = ('事病假扣薪',)
@@ -838,6 +846,7 @@ def _vertical_block(rows):
         if best_row is not None and best_hits >= max(2, (len(cols) + 1) // 2):
             assign_num(best_row, '應發金額')
 
+    has_bufa = any(_row_label(r) in BUFA_LABELS for r in rows)
     out = []
     for c in cols:
         pay = c.get('薪俸', 0)
@@ -871,6 +880,9 @@ def _vertical_block(rows):
             '加總差額': (total - s) if total else None,
             '最低信心': round(min(c['_conf']), 3),
         })
+        if has_bufa:
+            # 補發已含在其他加給內；另列出供與 AF 補發金額比對
+            out[-1]['補發'] = sum(c.get('_x_' + lab, 0) for lab in BUFA_LABELS)
     return out
 
 
@@ -1845,6 +1857,7 @@ def parse_horizontal_grid(rows):
             '導師特教': g('_導師') + g('_特教'),
             # 補發薪津、外縣市交通、輔導津貼、公保費不屬 AF 四欄，只參與驗算。
             '其他加給': g('_補發') + g('_交通') + g('_輔導') + g('_公保'),
+            '補發': g('_補發'),
             '應發金額': total,
             '應發金額推算': inferred,
             '加總相符': bool(total) and not inferred and total == computed,
@@ -1852,6 +1865,107 @@ def parse_horizontal_grid(rows):
             '最低信心': round(min(confs), 3),
         })
     return clean
+
+
+# ── 橫式表頭：補發欄（v1.3.24）───────────────────────────
+# 三侯國小掃描橫式清冊：編號｜職稱｜員工姓名｜俸點｜薪俸｜主管加給｜學術研究｜
+# 導師費｜補發薪資｜應發金額｜公保自付…。表頭整段被讀成少數幾個長 token
+# （例「主管加給學術研究導師費」），逐列解析只看金額順序，會把專業加給之後
+# 的補發薪資併入「導師特教」。這裡把表頭 token 依字元位置切回各欄中心，
+# 只用來把落在補發欄的金額移出導師特教。
+_H_HEADER_VOCAB = tuple(sorted(set(BUFA_LABELS + (
+    '員工姓名', '姓名', '編號', '序號', '職稱', '俸點', '薪點', '薪俸', '本俸', '月俸額',
+    '主管加給', '職務加給', '學術研究', '專業加給', '導師費', '導師加給', '特教加給',
+    '特教津貼', '補發', '應發金額', '應發合計', '應發數合計', '小計', '公保自付',
+    '健保自付', '勞保自付', '退撫自付', '勞退自提', '所得稅', '應扣金額', '實發金額',
+    '公教存款', '互助金')), key=len, reverse=True))
+_H_BUFA = set(BUFA_LABELS) | {'補發'}
+_H_TEACH = {'導師費', '導師加給', '特教加給', '特教津貼'}
+
+
+def _split_header_token(t):
+    """長表頭 token → [(欄名, 中心 x)]；依字元平均寬度估計各欄位置。"""
+    text = re.sub(r'\s', '', t.get('text') or '')
+    if not text:
+        return []
+    w = t.get('w') or 0
+    left = t.get('x', 0) - w / 2
+    step = w / len(text) if w else 0
+    out, i = [], 0
+    while i < len(text):
+        hit = next((lab for lab in _H_HEADER_VOCAB if text.startswith(lab, i)), None)
+        if hit:
+            out.append((hit, left + (i + len(hit) / 2) * step))
+            i += len(hit)
+        else:
+            i += 1
+    return out
+
+
+def _horizontal_headers(rows):
+    """各表頭列：[(page, y, 欄位中心清單或 None)]。同一頁可能有多個子表
+    （教師／職員／工友／代理各有表頭，補發欄名也不同），每列資料採用其
+    上方最近的表頭；該表頭沒有補發欄時為 None。"""
+    out = []
+    for r in rows:
+        if not r or not any('姓名' in (t.get('text') or '') for t in r):
+            continue
+        cols = [c for t in r for c in _split_header_token(t)]
+        ok = any(lab in _H_BUFA for lab, _ in cols) and any(
+            lab in ('薪俸', '本俸', '月俸額') for lab, _ in cols)
+        out.append((r[0].get('page', 0), r[0].get('y', 0), cols if ok else None))
+    return out
+
+
+def _header_for(row, headers):
+    if not row:
+        return None
+    page, y = row[0].get('page', 0), row[0].get('y', 0)
+    above = [h for h in headers if h[0] == page and h[1] < y]
+    return max(above, key=lambda h: h[1])[2] if above else None
+
+
+def _apply_bufa_column(p, row, cols, tol=0.025):
+    """把落在補發欄的金額自導師特教移到其他加給，並以「補發」另列。"""
+    bufa = teach = 0
+    for t in row:
+        txt = (t.get('text') or '').strip()
+        if not is_num(txt):
+            continue
+        lab, d = min(((lab, abs(t['x'] - x)) for lab, x in cols), key=lambda z: z[1])
+        if d > tol:
+            continue
+        if lab in _H_BUFA:
+            bufa += to_int(txt)
+        elif lab in _H_TEACH:
+            teach += to_int(txt)
+    p['補發'] = 0
+    if not bufa:
+        return p
+    duty = p.get('導師特教', 0)
+    if duty >= bufa and duty - bufa == teach:
+        p['導師特教'] = duty - bufa
+        p['其他加給'] = p.get('其他加給', 0) + bufa
+        p['補發'] = bufa
+    elif p.get('其他加給', 0) >= bufa:
+        p['補發'] = bufa            # 已在其他加給中，只補上明細
+    else:
+        p.pop('補發')               # 對不上：不另列，維持原結果
+    return p
+
+
+def _parse_horizontal_rows(rows):
+    headers = _horizontal_headers(rows)
+    out = []
+    for r in rows:
+        p = parse_horizontal_row(r)
+        if not p:
+            continue
+        cols = _header_for(r, headers)
+        if cols:
+            _apply_bufa_column(p, r, cols)
+        out.append(p)
+    return out
 
 
 def parse_row(row):
@@ -1868,7 +1982,7 @@ def _parse_as(rows, layout):
         return parse_horizontal_two_line(rows)
     if _is_grid_two_line(rows):
         return parse_horizontal_grid(rows)
-    return [p for p in (parse_horizontal_row(r) for r in rows) if p]
+    return _parse_horizontal_rows(rows)
 
 
 def _suspicious_name(name):
@@ -2076,6 +2190,12 @@ def layout_variant(tokens):
             kinds.add(detect_layout(pr))
     if len(kinds) > 1:
         traits.append('直式／橫式混合頁')
+    if code == 'horizontal_row':
+        has_bufa = any(cols for _, _, cols in _horizontal_headers(rows))
+    else:
+        has_bufa = any(_row_label(r) in BUFA_LABELS for r in rows)
+    if has_bufa:
+        traits.append('含補發薪資欄')
     traits.append(f'{len(pages)} 頁有文字')
     return code, LAYOUT_VARIANTS[code], traits
 
@@ -2087,6 +2207,7 @@ STYLE_TRAITS = {
     'mixed_orientation': '直式／橫式混合頁',
     'needs_tiled_ocr': '需 2×2 分塊辨識',
     'needs_upscale_4x': '需 4 倍放大辨識',
+    'has_bufa_column': '含補發薪資欄',
 }
 OCR_STRATEGIES = ('full', 'tiled_2x2', 'upscale_4x')
 _TRAIT_FROM_LABEL = {v: k for k, v in STYLE_TRAITS.items()}

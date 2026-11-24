@@ -38,12 +38,12 @@ class LayoutProfileStyleTests(unittest.TestCase):
     def test_save_records_style_traits_and_strategy(self):
         A.save_layout_profile('999000002Y', 'vertical', 0.9, {
             'style': 'vertical_column', 'style_label': '任意文字會被白名單取代',
-            'traits': ['has_summary_pages', 'skewed_header', '王小明', 'evil'],
+            'traits': ['has_summary_pages', 'skewed_header', 'has_bufa_column', '王小明', 'evil'],
             'ocr_strategy': 'full'})
         rec = self.read()['999000002Y']
         self.assertEqual(rec['style'], 'vertical_column')
         self.assertEqual(rec['style_label'], '直式一人一欄')
-        self.assertEqual(rec['traits'], ['has_summary_pages', 'skewed_header'])
+        self.assertEqual(rec['traits'], ['has_bufa_column', 'has_summary_pages', 'skewed_header'])
         self.assertEqual(rec['ocr_strategy'], 'full')
         self.assertEqual(rec['samples'], 1)
         loaded = A.load_layout_profile('999000002Y')

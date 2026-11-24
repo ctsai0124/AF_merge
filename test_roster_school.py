@@ -151,7 +151,7 @@ class IdentifyEndpointTests(unittest.TestCase):
 
     def test_page_loads_school_script(self):
         page = self.client.get('/').get_data(as_text=True)
-        self.assertIn('/static/af_school.js?v=v1.3.23', page)
+        self.assertIn('/static/af_school.js?v=v1.3.24', page)
 
 
 if __name__ == '__main__':

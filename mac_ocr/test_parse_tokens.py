@@ -538,5 +538,105 @@ class VerticalColumnHeaderTests(unittest.TestCase):
         self.assertEqual(layout, 'vertical')
         self.check(people)
 
+
+def htoken(text, x, y, w=None, page=0):
+    t = token(text, x, y, page)
+    t['w'] = w if w is not None else 0.01 * len(text)
+    return t
+
+
+class HorizontalBufaColumnTests(unittest.TestCase):
+    """三侯國小型掃描橫式清冊：導師費之後有「補發薪資」欄（晉級補發），表頭被讀成
+    幾個長 token。補發不可併入導師特教，需另以「補發」回報。全部為虛構資料。"""
+
+    def header(self, y, bufa_label='補發薪資'):
+        # 各欄中心：主管 .256 學術 .302 導師 .342 補發 .381 應發 .426
+        return [htoken('編號', .052, y), htoken('職稱', .078, y), htoken('員工姓名', .137, y),
+                htoken('俸點薪俸', .185, y, w=.049),
+                htoken('主管加給學術研究導師費', .2955, y, w=.1265),
+                htoken(bufa_label + '應發金額公保自付健保自付', .449, y, w=.18)]
+
+    def person(self, y, no, title, name, point, pay, mgr=0, prof=0, teach=0, bufa=0):
+        total = pay + mgr + prof + teach + bufa
+        t = [htoken(f'{no}{title}', .072, y), htoken(name, .129, y), htoken(str(point), .176, y),
+             htoken(str(pay), .217, y)]
+        for v, x in ((mgr, .260), (prof, .304), (teach, .345), (bufa, .389)):
+            if v:
+                t.append(htoken(str(v), x, y))
+        t += [htoken(str(total), .432, y), htoken('1446', .480, y), htoken('900', .526, y)]
+        return t
+
+    def build(self):
+        t = [htoken('某某國小115年11月薪資印領清冊', .5, .07)] + self.header(.108)
+        t += self.person(.137, 1, '校長', '王小明', 680, 57220, mgr=10010, prof=35780)
+        t += self.person(.157, 2, '教師', '李小華', 290, 32710, prof=26560, bufa=3450)
+        t += self.person(.177, 3, '教師', '陳大同', 650, 55690, prof=35780, teach=4000, bufa=4590)
+        t += self.person(.197, 4, '教師', '林美玲', 650, 55690, prof=35780, teach=4000)
+        t += self.person(.217, 5, '組長', '張志強', 575, 51100, mgr=5930, prof=35780, bufa=4620)
+        # 第二個子表：補發欄名為「補發金額」
+        t += self.header(.30, '補發金額')
+        t += self.person(.33, 6, '幹事', '黃淑芬', 590, 44970, prof=26830, bufa=1500)
+        # 第三個子表：沒有補發欄
+        t += [htoken('編號', .052, .40), htoken('職稱', .078, .40), htoken('員工姓名', .137, .40),
+              htoken('俸點薪俸', .185, .40, w=.049), htoken('主管加給專業加給導師費', .2955, .40, w=.1265),
+              htoken('應發金額公保自付健保自付', .449, .40, w=.18)]
+        t += self.person(.43, 7, '工友', '吳建國', 150, 18230, prof=18280)
+        return t
+
+    def parse(self):
+        rows = parse_tokens.group_rows(self.build())
+        return {p['姓名']: p for p in parse_tokens._parse_as(rows, 'horizontal')}
+
+    def test_bufa_is_not_teacher_allowance(self):
+        got = self.parse()
+        self.assertEqual(len(got), 7)
+        for p in got.values():
+            self.assertTrue(p['加總相符'], p['姓名'])
+        self.assertEqual((got['李小華']['導師特教'], got['李小華']['補發']), (0, 3450))
+        self.assertEqual((got['陳大同']['導師特教'], got['陳大同']['補發']), (4000, 4590))
+        self.assertEqual((got['林美玲']['導師特教'], got['林美玲']['補發']), (4000, 0))
+        self.assertEqual((got['張志強']['主管加給'], got['張志強']['導師特教'],
+                          got['張志強']['補發']), (5930, 0, 4620))
+        self.assertEqual(got['王小明']['補發'], 0)
+        # 補發仍計入其他加給，讓伺服器端驗算等式不變
+        self.assertEqual(got['陳大同']['其他加給'], 4590)
+
+    def test_each_subtable_uses_its_own_header(self):
+        got = self.parse()
+        self.assertEqual((got['黃淑芬']['導師特教'], got['黃淑芬']['補發']), (0, 1500))
+        self.assertNotIn('補發', got['吳建國'])       # 該子表沒有補發欄：不比對
+
+    def test_header_token_is_split_by_character_position(self):
+        cols = dict(parse_tokens._split_header_token(
+            htoken('補發薪資應發金額', .40, .1, w=.08)))
+        self.assertAlmostEqual(cols['補發薪資'], .38, places=3)
+        self.assertAlmostEqual(cols['應發金額'], .42, places=3)
+
+    def test_style_trait_records_bufa_column(self):
+        self.assertIn('has_bufa_column', parse_tokens.style_profile(self.build())['traits'])
+
+
+class VerticalBufaRowTests(unittest.TestCase):
+    def test_vertical_bufa_row_reported_separately(self):
+        t = [token('某某國小員工每月薪津發放清冊', .5, .06),
+             token('序號', .08, .10), token('姓名', .08, .14), token('小計', .9, .14)]
+        names = (('甲老師', .23, 32710, 26560, 3450), ('乙老師', .36, 55690, 35780, 0))
+        for i, (n, x, *_r) in enumerate(names):
+            t += [token(str(i + 1), x - .02, .10), token(n, x, .14)]
+        rows = (('本俸', .19, 2), ('學術研究費', .21, 3), ('補發薪資', .23, 4), ('應發數合計', .43, None))
+        for label, y, k in rows:
+            t.append(token(label, .09, y))
+            for n, x, pay, prof, bufa in names:
+                v = {2: pay, 3: prof, 4: bufa}.get(k, pay + prof + bufa)
+                if v:
+                    t.append(token(f'{v:,}', x + .06, y))
+        people, layout = parse_tokens.parse_tokens(t)
+        self.assertEqual(layout, 'vertical')
+        got = {p['姓名']: p for p in people}
+        self.assertEqual((got['甲老師']['導師特教'], got['甲老師']['補發']), (0, 3450))
+        self.assertEqual(got['乙老師']['補發'], 0)
+        self.assertTrue(all(p['加總相符'] for p in people))
+        self.assertIn('has_bufa_column', parse_tokens.style_profile(t)['traits'])
+
 if __name__ == '__main__':
     unittest.main()

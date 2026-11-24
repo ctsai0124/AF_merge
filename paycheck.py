@@ -54,6 +54,13 @@ FIELDS = ['薪俸', '專業加給', '主管加給', '導師特教']
 FIELD_LABEL = {'薪俸': '薪俸／本俸', '專業加給': '專業加給／學術研究費',
                '主管加給': '職務加給', '導師特教': '導師加給＋特教加給'}
 
+# v1.3.24：補發（晉級補發等）。清冊有「補發薪資／補發金額」欄時才比對，對 AF
+# 薪俸、專業加給、職務加給、地域加給的「補發金額」合計（AF 總金額＝支領數額＋
+# 補發金額）。補發不屬於導師／特教，也不算進上面四項。
+BUFA_FIELD = '補發'
+BUFA_LABEL = '補發薪資（AF 補發金額）'
+AF_BUFA_COLS = ('補發金額', '補發金額.1', '補發金額.2', '補發金額.3')
+
 
 def _n(v):
     v = str(v or '').replace(',', '').strip()
@@ -102,8 +109,10 @@ def load_af(file_bytes, filename):
         d = recs.setdefault(pid, {
             '身分證': pid.upper(), '姓名': str(r['姓名']).strip(), '單位': '',
             '薪俸': 0, '專業加給': 0, '主管加給': 0, '導師特教': 0, '列數': 0,
+            BUFA_FIELD: 0,
         })
         d['列數'] += 1
+        d[BUFA_FIELD] += sum(_n(r.get(c, '')) for c in AF_BUFA_COLS if c in df.columns)
         if str(r.get('單位', '')).strip():
             d['單位'] = str(r['單位']).strip()
         if str(r['薪俸表別']).strip():
@@ -145,6 +154,8 @@ FIELD_ALIAS = {
     '地域加給': '地域加給',
     '應發數合計': '應發金額', '應發金額': '應發金額',
     '實發數': '實發金額', '實發金額': '實發金額',
+    '補發薪資': BUFA_FIELD, '補發薪俸': BUFA_FIELD, '補發本俸': BUFA_FIELD,
+    '本俸補發': BUFA_FIELD, '補發薪津': BUFA_FIELD, '補發金額': BUFA_FIELD,
 }
 SKIP_NAME = ('小計', '合計', '總計', '備註', '出納', '人事', '會計', '製表')
 
@@ -504,6 +515,10 @@ def compare(pdf_people, af_records):
             pv, av = p.get(f, 0), a.get(f, 0)
             if pv != av:
                 diffs.append({'欄位': FIELD_LABEL[f], '清冊': pv, 'AF': av, '差額': av - pv})
+        if BUFA_FIELD in p:          # 清冊有補發欄才比對
+            pv, av = _n(p.get(BUFA_FIELD)), _n(a.get(BUFA_FIELD))
+            if pv != av:
+                diffs.append({'欄位': BUFA_LABEL, '清冊': pv, 'AF': av, '差額': av - pv})
         results.append({
             '姓名': a['姓名'], '職稱': p.get('職稱', ''), '單位': a.get('單位', ''),
             '身分證': a['身分證'], '配對依據': why,
@@ -683,7 +698,7 @@ def arith_check(p):
         return None, 0
     s = (p.get('薪俸', 0) + p.get('專業加給', 0)
          + p.get('主管加給', 0) + p.get('導師特教', 0)
-         + p.get('地域加給', 0) + p.get('其他', 0))
+         + p.get('地域加給', 0) + p.get('其他', 0) + p.get(BUFA_FIELD, 0))
     return s == total, total - s
 
 
@@ -889,7 +904,8 @@ def from_ocr(ocr_people, af_records):
                          '身分證': pid if id_ok else '',
                          '應發金額': total, '其他加給': other,
                          '_ocr_name_fixed': changed,
-                         '_ocr_corrected': corrected, **vals})
+                         '_ocr_corrected': corrected, **vals,
+                         **({BUFA_FIELD: _n(p.get(BUFA_FIELD))} if BUFA_FIELD in p else {})})
             continue
 
         reasons = []
@@ -914,6 +930,7 @@ def from_ocr(ocr_people, af_records):
             '姓名可疑': not name_ok, '金額可疑': not sum_ok,
             '其他加給': other,
             **vals,
+            **({BUFA_FIELD: _n(p.get(BUFA_FIELD))} if BUFA_FIELD in p else {}),
         })
 
     return good, need
@@ -938,6 +955,7 @@ def compare_with_fixed(good, fixed_rows, af_records):
             '應發金額': _n(r.get('應發金額', 0)), '_user_fixed': True,
             '_次要': is_sub,
             '_次要原因': (r.get('_次要原因') or '人工確認時排除') if is_sub else '',
+            **({BUFA_FIELD: _n(r.get(BUFA_FIELD))} if BUFA_FIELD in r else {}),
         })
     return compare(merged, af_records)
 

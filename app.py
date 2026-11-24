@@ -22,8 +22,8 @@ app.config.update(
     SESSION_COOKIE_SAMESITE='Lax',  # 降低跨站請求偽造（CSRF）風險
 )
 
-APP_VERSION = 'v1.3.23'
-BUILD_VERSION = '2026.11.24.2'
+APP_VERSION = 'v1.3.24'
+BUILD_VERSION = '2026.11.24.3'
 
 
 def _is_sensitive_response(path):
@@ -476,7 +476,7 @@ STYLE_LABELS = {
 STYLE_LAYOUT = {'vertical_column': 'vertical', 'horizontal_row': 'horizontal',
                 'horizontal_two_line': 'horizontal', 'horizontal_grid': 'horizontal'}
 STYLE_TRAITS = ('has_summary_pages', 'skewed_header', 'mixed_orientation',
-                'needs_tiled_ocr', 'needs_upscale_4x')
+                'needs_tiled_ocr', 'needs_upscale_4x', 'has_bufa_column')
 OCR_STRATEGIES = ('full', 'tiled_2x2', 'upscale_4x')
 
 
